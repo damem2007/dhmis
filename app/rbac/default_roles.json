@@ -1,0 +1,14 @@
+[
+  {"name": "admin", "organization_scope": true, "modules": ["patients", "scheduling", "clinical", "billing", "claims", "consents", "settings", "dashboard", "prescriptions", "surgery", "operations", "reporting", "analytics"], "compatibility_permissions": ["analytics_export", "audit_export", "support_reset"]},
+  {"name": "organization-admin", "organization_scope": true, "modules": ["patients", "scheduling", "clinical", "billing", "claims", "consents", "settings", "dashboard", "prescriptions", "surgery", "operations", "reporting", "analytics"], "compatibility_permissions": ["analytics_export", "audit_export", "support_reset"]},
+  {"name": "clinic-admin", "organization_scope": true, "modules": ["patients", "scheduling", "clinical", "billing", "claims", "consents", "settings", "dashboard", "operations", "reporting", "analytics"], "compatibility_permissions": ["analytics_export", "audit_export", "support_reset"]},
+  {"name": "system-admin", "organization_scope": true, "modules": ["settings", "dashboard", "operations", "analytics"], "compatibility_permissions": ["analytics_export", "audit_export", "support_reset"]},
+  {"name": "technical-support", "organization_scope": true, "modules": ["dashboard", "settings", "operations"], "compatibility_permissions": ["support_reset"]},
+  {"name": "dentist", "organization_scope": false, "modules": ["patients", "scheduling", "clinical", "consents", "dashboard", "prescriptions", "surgery", "operations", "reporting", "analytics"]},
+  {"name": "hygienist", "organization_scope": false, "modules": ["patients", "scheduling", "clinical", "consents", "dashboard", "operations", "analytics"]},
+  {"name": "dental-assistant", "organization_scope": false, "modules": ["patients", "scheduling", "clinical", "dashboard", "operations", "analytics"]},
+  {"name": "treatment-coordinator", "organization_scope": false, "modules": ["patients", "scheduling", "clinical", "billing", "dashboard", "analytics"]},
+  {"name": "front-desk", "organization_scope": false, "modules": ["patients", "scheduling", "consents", "dashboard", "operations", "analytics"]},
+  {"name": "billing", "organization_scope": false, "modules": ["patients", "billing", "claims", "dashboard", "reporting", "analytics"], "compatibility_permissions": ["analytics_export", "audit_export"]},
+  {"name": "accounting", "organization_scope": false, "modules": ["patients", "billing", "claims", "dashboard", "reporting", "analytics"], "compatibility_permissions": ["analytics_export", "audit_export"]}
+]
