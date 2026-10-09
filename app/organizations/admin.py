@@ -66,6 +66,8 @@ from app.rbac.models import (
     PlatformApprovalPolicy,
     PlatformChangeDecision,
     PlatformChangeRequest,
+    PlatformRole,
+    PlatformRoleAssignment,
     TenantRole,
     TenantRoleGrant,
 )
@@ -1067,6 +1069,17 @@ async def platform_access_query(
 ):
     now = int(time.time())
     async with control_session() as db:
+        assignment_rows = (
+            await db.execute(
+                select(PlatformRoleAssignment.user_id, PlatformRoleAssignment.role_id, PlatformRole.name)
+                .join(PlatformRole, PlatformRole.id == PlatformRoleAssignment.role_id)
+            )
+        ).all()
+        assignments_by_user: dict[str, list[dict[str, str | None]]] = {}
+        for user_id, role_id, role_name in assignment_rows:
+            assignments_by_user.setdefault(user_id, []).append(
+                {"role": role_name, "role_id": role_id, "scope": "Platform", "location_id": None}
+            )
         users = (await db.scalars(select(PlatformUser).order_by(PlatformUser.created_at.desc()))).all()
         invitations = (
             await db.scalars(select(PlatformInvite).order_by(PlatformInvite.created_at.desc()))
@@ -1078,6 +1091,7 @@ async def platform_access_query(
                 "name": row.name,
                 "email": row.email,
                 "role": row.role,
+                "assignments": assignments_by_user.get(row.id, []),
                 "status": "active" if row.active else "disabled",
                 "mfa_enabled": row.mfa_enabled,
                 "created_at": row.created_at,

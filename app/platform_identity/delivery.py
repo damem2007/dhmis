@@ -94,6 +94,12 @@ async def dispatch_platform_outbox(db, now: datetime | None = None) -> dict[str,
         )
     ).all()
     adapters = await platform_adapter_names(db)
+    # Control-plane email is still expected to work in the development
+    # sandbox before an operator configures a global adapter default. Keep the
+    # pending outbox moving with the built-in simulator in non-production;
+    # production continues to fail closed when no adapter is configured.
+    if "email_provider" not in adapters and settings().environment in {"development", "sandbox", "test"}:
+        adapters["email_provider"] = "sandbox"
     context = PlatformProviderContext(_effective_adapters=adapters)
     delivered = failed = 0
     for row in rows:

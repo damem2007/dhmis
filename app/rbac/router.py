@@ -795,6 +795,14 @@ async def _assign_role(
         raise HTTPException(422, "Platform roles require Platform assignment reach")
     if domain is Domain.TENANT and body.level == "Platform":
         raise HTTPException(422, "Tenant roles cannot use Platform assignment reach")
+    if domain is Domain.PLATFORM:
+        existing_role_id = await db.scalar(
+            select(assignment_model.role_id)
+            .where(assignment_model.user_id == body.user_id)
+            .limit(1)
+        )
+        if existing_role_id and existing_role_id != body.role_id:
+            raise HTTPException(409, "A platform user can hold only one platform role")
     if body.location_id and await db.get(Location, body.location_id) is None:
         raise HTTPException(404, "Location not found")
     context = (
