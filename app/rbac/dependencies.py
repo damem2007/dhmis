@@ -107,7 +107,7 @@ def permit_platform_or_bootstrap(permission_key: str, *, workflow_handles_approv
         request: Request,
         actor: PlatformActor = Depends(platform_or_bootstrap),
     ):
-        if actor.user_id == "bootstrap":
+        if actor.user_id == "bootstrap" or actor.is_bootstrap_operator:
             return actor
         return await permit_platform(
             permission_key,

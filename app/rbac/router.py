@@ -14,7 +14,6 @@ from app.organizations.models import Location
 from app.platform_identity.models import PlatformUser
 from app.platform_identity.service import PlatformActor, current_platform, platform_audit
 from app.rbac.dependencies import permit_platform, permit_platform_or_bootstrap, permit_tenant
-from app.rbac.bootstrap import PLATFORM_SUPER_ADMIN_ROLE_ID
 from app.rbac.management import (
     assert_unique_name,
     assignment_is_high_risk,
@@ -1790,10 +1789,7 @@ async def platform_request_decision(
                 rule_model=PlatformFourEyesRule,
                 allow_maker=(
                     actor.user_id == "bootstrap"
-                    or (
-                        actor.is_bootstrap_operator
-                        and PLATFORM_SUPER_ADMIN_ROLE_ID in role_keys
-                    )
+                    or actor.is_bootstrap_operator
                 ),
             )
         platform_audit(
