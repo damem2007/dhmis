@@ -1582,6 +1582,7 @@ def can_decide(
     user_domain: Domain,
     user_role_keys: set[str],
     policy: ApprovalPolicy,
+    allow_maker: bool = False,
     now: datetime | None = None,
 ) -> tuple[bool, str | None]:
     now = now or datetime.now(UTC)
@@ -1595,7 +1596,7 @@ def can_decide(
             "approver belongs to a different authorization domain",
         )
 
-    if request.maker_id == user_id:
+    if request.maker_id == user_id and not allow_maker:
         return False, "maker cannot approve own request"
 
     if any(
@@ -1611,7 +1612,7 @@ def can_decide(
         eligible_approver_roles(request.domain, policy)
     )
 
-    if not eligible_roles.intersection(user_role_keys):
+    if not eligible_roles.intersection(user_role_keys) and not (allow_maker and user_domain is Domain.PLATFORM):
         return (
             False,
             "user is not an eligible approver for this "
@@ -1628,6 +1629,7 @@ def apply_decision(
     user_domain: Domain,
     user_role_keys: set[str],
     policy: ApprovalPolicy,
+    allow_maker: bool = False,
     now: datetime | None = None,
 ) -> ChangeRequest:
     allowed, reason = can_decide(
@@ -1636,6 +1638,7 @@ def apply_decision(
         user_domain=user_domain,
         user_role_keys=user_role_keys,
         policy=policy,
+        allow_maker=allow_maker,
         now=now,
     )
 

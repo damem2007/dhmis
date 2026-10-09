@@ -53,28 +53,48 @@ async def enqueue_platform_email(
             token_key: platform_action_url(action, raw_token),
         },
     )
+    payload = {
+        "channel": "email",
+        "destination": destination,
+        "subject": subject,
+        "body": body,
+        "reference_id": reference_id,
+    }
     row = PlatformOutboxMessage(
         kind=kind,
-        payload={
-            "channel": "email",
-            "destination": destination,
-            "subject": subject,
-            "body": body,
-            "reference_id": reference_id,
-        },
-        status="pending",
+        payload=payload,
+        status="sent",
         idempotency_key=f"{kind}:{reference_id}",
         created_by=actor_id,
         updated_by=actor_id,
     )
-    db.add(row)
-    await db.flush()
-    platform_audit(
-        db,
-        actor_id,
-        f"{kind}.delivery.queued",
-        details={"outbox_id": row.id, "reference_id": reference_id},
-    )
+    adapters = await platform_adapter_names(db)
+    if "email_provider" not in adapters and settings().environment in {"development", "sandbox", "test"}:
+        adapters["email_provider"] = "sandbox"
+    try:
+        result = await resolve(
+            PlatformProviderContext(_effective_adapters=adapters),
+            "email_provider",
+        ).send(MessageRequest(
+            idempotency_key=row.idempotency_key,
+            channel="email",
+            destination=destination,
+            subject=subject,
+            body=body,
+        ))
+        if result.get("status") not in DELIVERED_STATES:
+            raise IntegrationFailure("Provider did not accept platform email delivery")
+        row.result = result
+        platform_audit(db, actor_id, f"{kind}.delivery.accepted", details={"reference_id": reference_id, "sandbox": bool(result.get("sandbox"))})
+        return row
+    except (IntegrationFailure, KeyError, ValueError) as error:
+        row.status = "retry"
+        row.attempts = 1
+        row.due_at = datetime.now(UTC) + timedelta(seconds=60)
+        row.result = {"error": str(error)}
+        db.add(row)
+        await db.flush()
+        platform_audit(db, actor_id, f"{kind}.delivery.failed", details={"outbox_id": row.id, "reference_id": reference_id, "terminal": False})
     return row
 
 

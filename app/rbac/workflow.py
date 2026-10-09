@@ -622,6 +622,7 @@ async def decide_request(
     grant_model,
     version_model,
     rule_model=None,
+    allow_maker: bool = False,
 ):
     del request_model
     existing = (
@@ -643,6 +644,7 @@ async def decide_request(
             user_domain=domain,
             user_role_keys=role_keys,
             policy=policy,
+            allow_maker=allow_maker,
         )
     except (PermissionError, ValueError) as error:
         raise HTTPException(409, str(error)) from None

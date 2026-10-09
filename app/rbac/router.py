@@ -13,7 +13,7 @@ from app.identity.service import Actor, current_actor
 from app.organizations.models import Location
 from app.platform_identity.models import PlatformUser
 from app.platform_identity.service import PlatformActor, current_platform, platform_audit
-from app.rbac.dependencies import permit_platform, permit_tenant
+from app.rbac.dependencies import permit_platform, permit_platform_or_bootstrap, permit_tenant
 from app.rbac.management import (
     assert_unique_name,
     assignment_is_high_risk,
@@ -415,7 +415,7 @@ async def change_tenant_policy(
 async def change_platform_policy(
     body: ApprovalPolicyChangeInput,
     actor: PlatformActor = Depends(
-        permit_platform("access.platform_role.update", workflow_handles_approval=True)
+        permit_platform_or_bootstrap("access.platform_role.update", workflow_handles_approval=True)
     ),
 ):
     async with control_session() as db:
@@ -1786,6 +1786,7 @@ async def platform_request_decision(
                 grant_model=PlatformRoleGrant,
                 version_model=PlatformPolicyVersion,
                 rule_model=PlatformFourEyesRule,
+                allow_maker=actor.user_id == "bootstrap",
             )
         platform_audit(
             db,
