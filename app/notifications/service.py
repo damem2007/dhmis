@@ -14,6 +14,37 @@ from app.patients.models import Patient
 from app.scheduling.models import Appointment
 
 
+async def deliver_message_now(db, actor, message: OutboxMessage, now=None) -> OutboxMessage:
+    """Deliver a one-off email/SMS immediately; persist only failures for retry."""
+    now = now or datetime.now(timezone.utc)
+    destination = message.payload.get("destination") if isinstance(message.payload, dict) else None
+    if not destination or not message.payload.get("body"):
+        db.add(message)
+        return message
+    channel = message.payload.get("channel", "email")
+    message.attempts += 1
+    try:
+        capability = f"{channel}_provider" if f"{channel}_provider" in actor.adapter_names else "messaging_provider"
+        result = await resolve(actor.organization, capability).send(MessageRequest(
+            idempotency_key=message.idempotency_key,
+            channel=channel,
+            destination=destination,
+            subject=message.payload.get("subject", "DHMIS notification"),
+            body=message.payload["body"],
+        ))
+        if result.get("status") not in {"simulated", "sent", "delivered", "accepted"}:
+            raise IntegrationFailure("Provider did not accept delivery")
+        message.status = result["status"]
+        message.result = result
+        audit(db, actor.user_id, f"{message.kind}.delivery", "outbox_messages", message.id, sandbox=result.get("sandbox", False))
+    except (IntegrationFailure, KeyError, ValueError) as error:
+        message.status = "retry"
+        message.due_at = now + timedelta(seconds=60)
+        message.result = {"error": str(error)}
+        db.add(message)
+    return message
+
+
 async def dispatch(db, actor, now=None):
     now = now or datetime.now(timezone.utc)
     messages = (

@@ -17,6 +17,7 @@ from app.identity.router import DUMMY_HASH, throttle
 from app.identity.security import digest
 from app.identity.service import db_session, permit
 from app.notifications.models import OutboxMessage
+from app.notifications.service import deliver_message_now
 from app.organizations.tenant_resolution import organization_from_login, resolve_organization
 from app.patient_identity.models import (
     PatientInvite,
@@ -185,8 +186,7 @@ async def resend_patient_invite(
         },
         actor.user_id,
     )
-    db.add(
-        OutboxMessage(
+    await deliver_message_now(db, actor, OutboxMessage(
             kind="patient.invitation",
             payload={
                 "destination": replacement.email,
@@ -195,8 +195,7 @@ async def resend_patient_invite(
             idempotency_key=f"patient-invitation:{replacement.id}",
             created_by=actor.user_id,
             updated_by=actor.user_id,
-        )
-    )
+        ))
     audit(db, actor.user_id, "portal.invite.resend", "patients", invitation.patient_id)
     return {"invite_id": replacement.id, "token": raw, "expires": replacement.expires}
 
@@ -341,8 +340,7 @@ async def request_verification(body: VerificationRequest, request: Request):
             },
             "patient-verification",
         )
-        db.add(
-            OutboxMessage(
+        db.add(OutboxMessage(
                 kind="patient.verification",
                 payload={
                     "patient_id": patient.id,
@@ -353,8 +351,7 @@ async def request_verification(body: VerificationRequest, request: Request):
                 due_at=datetime.now(timezone.utc),
                 created_by="patient-verification",
                 updated_by="patient-verification",
-            )
-        )
+            ))
         audit(db, "anonymous", "portal.verification.request", "patient_auth", patient_id=patient.id, matched=True)
     return {**generic, "challenge_token": raw}
 

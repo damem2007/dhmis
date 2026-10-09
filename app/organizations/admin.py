@@ -33,6 +33,7 @@ from app.integrations.models import (
 )
 from app.integrations.registry import REGISTRY, provider_options
 from app.notifications.models import OutboxMessage
+from app.notifications.service import deliver_message_now
 from app.organizations.configuration import (
     configure_tenant,
     platform_configuration,
@@ -463,8 +464,7 @@ async def invite(db, body, actor, clinic_name="your clinic"):
             "invitation_link": raw,
         },
     )
-    db.add(
-        OutboxMessage(
+    await deliver_message_now(db, actor, OutboxMessage(
             kind="staff.invitation",
             payload={
                 "destination": record.email,
@@ -475,8 +475,7 @@ async def invite(db, body, actor, clinic_name="your clinic"):
             idempotency_key=f"staff-invitation:{record.id}",
             created_by=actor,
             updated_by=actor,
-        )
-    )
+        ))
     audit(
         db,
         actor,
@@ -2188,8 +2187,7 @@ async def resend_invitation(
             "invitation_link": raw,
         },
     )
-    db.add(
-        OutboxMessage(
+    await deliver_message_now(db, actor, OutboxMessage(
             kind="staff.invitation",
             payload={
                 "destination": replacement.email,
@@ -2200,8 +2198,7 @@ async def resend_invitation(
             idempotency_key=f"staff-invitation:{replacement.id}",
             created_by=actor.user_id,
             updated_by=actor.user_id,
-        )
-    )
+        ))
     audit(db, actor.user_id, "invite.resend", "staff", replacement.id, supersedes_id=prior.id)
     return {"invite_id": replacement.id, "token": raw, "expires_in": 86400}
 
