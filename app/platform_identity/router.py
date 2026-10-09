@@ -25,6 +25,7 @@ from app.platform_identity.models import (
 from app.platform_identity.service import (
     PlatformActor,
     current_platform,
+    is_bootstrap_platform_user,
     platform_or_bootstrap,
     issue_platform_token,
     platform_audit,
@@ -239,7 +240,7 @@ async def verify(body: VerifyInput):
         user.mfa_counter = counter
         user.mfa_enabled = True
         challenge.used = True
-        if user.created_by == "bootstrap":
+        if is_bootstrap_platform_user(user):
             # Older bootstrap records may predate canonical RBAC assignment.
             # Reconcile the locked role at the first successful MFA login.
             await seed_platform_super_admin(db, user.id)

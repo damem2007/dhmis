@@ -24,6 +24,12 @@ class PlatformActor:
     is_bootstrap_operator: bool = False
 
 
+def is_bootstrap_platform_user(user: PlatformUser) -> bool:
+    """Identify the persisted account created by the platform bootstrap flow."""
+
+    return str(user.created_by or "").strip().lower() == "bootstrap"
+
+
 def platform_audit(db, actor_id, action, *, organization_id=None, reason="", details=None):
     db.add(
         PlatformAuditEvent(
@@ -100,7 +106,7 @@ async def current_platform(
             user.role,
             session.id,
             data["iat"],
-            user.created_by == "bootstrap",
+            is_bootstrap_platform_user(user),
         )
     except (jwt.InvalidTokenError, ValueError, KeyError):
         raise HTTPException(401, "Valid platform operator session required") from None

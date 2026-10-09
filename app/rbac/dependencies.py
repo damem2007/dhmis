@@ -5,7 +5,14 @@ from fastapi import Depends, HTTPException, Request
 from app.core.audit import audit
 from app.core.database import control_session, organization_session
 from app.identity.service import Actor, current_actor
-from app.platform_identity.service import PlatformActor, current_platform, platform_audit, platform_or_bootstrap
+from app.platform_identity.models import PlatformUser
+from app.platform_identity.service import (
+    PlatformActor,
+    current_platform,
+    is_bootstrap_platform_user,
+    platform_audit,
+    platform_or_bootstrap,
+)
 from app.rbac.runtime import decide_platform, decide_tenant
 
 
@@ -109,6 +116,13 @@ def permit_platform_or_bootstrap(permission_key: str, *, workflow_handles_approv
     ):
         if actor.user_id == "bootstrap" or actor.is_bootstrap_operator:
             return actor
+        # Re-read persisted provenance for sessions created before the
+        # bootstrap marker was normalized on the actor object.
+        async with control_session() as db:
+            user = await db.get(PlatformUser, actor.user_id)
+            if user is not None and is_bootstrap_platform_user(user):
+                actor.is_bootstrap_operator = True
+                return actor
         return await permit_platform(
             permission_key,
             workflow_handles_approval=workflow_handles_approval,
