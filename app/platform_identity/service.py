@@ -21,6 +21,7 @@ class PlatformActor:
     role: str
     session_id: str
     mfa_authenticated_at: int = 0
+    is_bootstrap_operator: bool = False
 
 
 def platform_audit(db, actor_id, action, *, organization_id=None, reason="", details=None):
@@ -93,7 +94,14 @@ async def current_platform(
             ):
                 raise ValueError()
             session.last_active = now
-        return PlatformActor(user.id, user.name, user.role, session.id, data["iat"])
+        return PlatformActor(
+            user.id,
+            user.name,
+            user.role,
+            session.id,
+            data["iat"],
+            user.created_by == "bootstrap",
+        )
     except (jwt.InvalidTokenError, ValueError, KeyError):
         raise HTTPException(401, "Valid platform operator session required") from None
 
@@ -103,5 +111,5 @@ async def platform_or_bootstrap(
     x_bootstrap_key: str = Header(default=""),
 ):
     if hmac.compare_digest(x_bootstrap_key, settings().bootstrap_key.get_secret_value()):
-        return PlatformActor("bootstrap", "Bootstrap operator", "platform_admin", "")
+        return PlatformActor("bootstrap", "Bootstrap operator", "platform-super-admin", "", is_bootstrap_operator=True)
     return await current_platform(credentials)

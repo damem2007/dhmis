@@ -14,6 +14,7 @@ from app.organizations.models import Location
 from app.platform_identity.models import PlatformUser
 from app.platform_identity.service import PlatformActor, current_platform, platform_audit
 from app.rbac.dependencies import permit_platform, permit_platform_or_bootstrap, permit_tenant
+from app.rbac.bootstrap import PLATFORM_SUPER_ADMIN_ROLE_ID
 from app.rbac.management import (
     assert_unique_name,
     assignment_is_high_risk,
@@ -1771,6 +1772,7 @@ async def platform_request_decision(
         if action == "withdraw":
             await withdraw_request(db, row, actor.user_id)
         else:
+            role_keys = await _approver_role_keys(db, actor.user_id, Domain.PLATFORM)
             await decide_request(
                 db,
                 request_row=row,
@@ -1778,7 +1780,7 @@ async def platform_request_decision(
                 comment=body.comment,
                 actor_id=actor.user_id,
                 domain=Domain.PLATFORM,
-                role_keys=await _approver_role_keys(db, actor.user_id, Domain.PLATFORM),
+                role_keys=role_keys,
                 request_model=PlatformChangeRequest,
                 decision_model=PlatformChangeDecision,
                 policy_model=PlatformApprovalPolicy,
@@ -1786,7 +1788,13 @@ async def platform_request_decision(
                 grant_model=PlatformRoleGrant,
                 version_model=PlatformPolicyVersion,
                 rule_model=PlatformFourEyesRule,
-                allow_maker=actor.user_id == "bootstrap",
+                allow_maker=(
+                    actor.user_id == "bootstrap"
+                    or (
+                        actor.is_bootstrap_operator
+                        and PLATFORM_SUPER_ADMIN_ROLE_ID in role_keys
+                    )
+                ),
             )
         platform_audit(
             db,

@@ -107,6 +107,10 @@ async def bootstrap(body: BootstrapInput, x_bootstrap_key: str = Header(default=
         )
         db.add(user)
         await db.flush()
+        # The first platform identity is the control-plane bootstrap operator.
+        # Give it the canonical locked role so RBAC, effective-access views,
+        # and maker-checker eligibility all use the same source of truth.
+        await seed_platform_super_admin(db, user.id)
         platform_audit(db, user.id, "platform.bootstrap")
     return {"status": "created"}
 
@@ -235,6 +239,10 @@ async def verify(body: VerifyInput):
         user.mfa_counter = counter
         user.mfa_enabled = True
         challenge.used = True
+        if user.created_by == "bootstrap":
+            # Older bootstrap records may predate canonical RBAC assignment.
+            # Reconcile the locked role at the first successful MFA login.
+            await seed_platform_super_admin(db, user.id)
         access = await issue_platform_token(db, user)
         platform_audit(db, user.id, "platform.auth.success")
     return {"access_token": access, "token_type": "bearer", "expires_in": 1800}
@@ -246,7 +254,15 @@ async def me(actor: PlatformActor = Depends(current_platform)):
         user = await db.get(PlatformUser, actor.user_id)
         if user is None:
             raise HTTPException(404, "Platform profile not found")
-        return {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "mfa_enabled": user.mfa_enabled}
+        return {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": "Platform Super Admin" if actor.is_bootstrap_operator else user.role,
+            "role_id": "platform-super-admin" if actor.is_bootstrap_operator else None,
+            "is_bootstrap_operator": actor.is_bootstrap_operator,
+            "mfa_enabled": user.mfa_enabled,
+        }
 
 
 @router.put("/me")
@@ -258,7 +274,15 @@ async def update_me(body: ProfileUpdate, actor: PlatformActor = Depends(current_
         user.name = body.name.strip()
         user.updated_by = actor.user_id
         platform_audit(db, actor.user_id, "platform.profile.update")
-        return {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "mfa_enabled": user.mfa_enabled}
+        return {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": "Platform Super Admin" if actor.is_bootstrap_operator else user.role,
+            "role_id": "platform-super-admin" if actor.is_bootstrap_operator else None,
+            "is_bootstrap_operator": actor.is_bootstrap_operator,
+            "mfa_enabled": user.mfa_enabled,
+        }
 
 
 @router.post("/password/change")
