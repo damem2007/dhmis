@@ -63,6 +63,19 @@ class CompletePlatformPasswordReset(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+class ProfileUpdate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
+class MfaResetInput(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
 async def challenge_user(db, raw):
     challenge = await db.scalar(
         select(PlatformChallenge)
@@ -228,8 +241,54 @@ async def verify(body: VerifyInput):
 
 
 @router.get("/me")
-async def me(actor: PlatformActor = Depends(platform_or_bootstrap)):
-    return {"id": actor.user_id, "name": actor.name, "role": actor.role}
+async def me(actor: PlatformActor = Depends(current_platform)):
+    async with control_session() as db:
+        user = await db.get(PlatformUser, actor.user_id)
+        if user is None:
+            raise HTTPException(404, "Platform profile not found")
+        return {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "mfa_enabled": user.mfa_enabled}
+
+
+@router.put("/me")
+async def update_me(body: ProfileUpdate, actor: PlatformActor = Depends(current_platform)):
+    async with control_session() as db:
+        user = await db.get(PlatformUser, actor.user_id)
+        if user is None:
+            raise HTTPException(404, "Platform profile not found")
+        user.name = body.name.strip()
+        user.updated_by = actor.user_id
+        platform_audit(db, actor.user_id, "platform.profile.update")
+        return {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "mfa_enabled": user.mfa_enabled}
+
+
+@router.post("/password/change")
+async def change_password(body: PasswordChange, actor: PlatformActor = Depends(current_platform)):
+    async with control_session() as db:
+        user = await db.get(PlatformUser, actor.user_id)
+        if user is None or not verify_password(body.current_password, user.password_hash):
+            raise HTTPException(400, "Current password is incorrect")
+        user.password_hash = hash_password(body.new_password)
+        user.token_version += 1
+        user.updated_by = actor.user_id
+        await db.execute(update(PlatformSession).where(PlatformSession.user_id == user.id, PlatformSession.revoked.is_(False)).values(revoked=True, updated_by=actor.user_id))
+        platform_audit(db, actor.user_id, "platform.password.change")
+    return {"status": "password-updated"}
+
+
+@router.post("/mfa/reset")
+async def reset_mfa(body: MfaResetInput, actor: PlatformActor = Depends(current_platform)):
+    async with control_session() as db:
+        user = await db.get(PlatformUser, actor.user_id)
+        if user is None or not verify_password(body.password, user.password_hash):
+            raise HTTPException(400, "Password is incorrect")
+        user.mfa_enabled = False
+        user.mfa_secret = ""
+        user.mfa_counter = -1
+        user.token_version += 1
+        user.updated_by = actor.user_id
+        await db.execute(update(PlatformSession).where(PlatformSession.user_id == user.id, PlatformSession.revoked.is_(False)).values(revoked=True, updated_by=actor.user_id))
+        platform_audit(db, actor.user_id, "platform.mfa.reset")
+    return {"status": "mfa-reset"}
 
 
 @router.post("/logout")
