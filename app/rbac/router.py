@@ -929,6 +929,7 @@ async def _approval_notifications(
                 "detail": row.reason,
                 "status": row.status,
                 "created_at": row.created_at,
+                "cta_label": "Review request",
                 "counted": True,
                 "seen": False,
             })
@@ -940,6 +941,7 @@ async def _approval_notifications(
                 "detail": row.reason,
                 "status": row.status,
                 "created_at": row.created_at,
+                "cta_label": "View request",
                 "counted": False,
                 "seen": True,
             })
@@ -953,6 +955,7 @@ async def _approval_notifications(
                 "detail": row.reason,
                 "status": row.status,
                 "created_at": row.updated_at,
+                "cta_label": "View outcome",
                 "counted": row.id not in seen,
                 "seen": row.id in seen,
             })

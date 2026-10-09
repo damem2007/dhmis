@@ -1141,6 +1141,16 @@ async def platform_notifications(
                 "Delivery failed and needs attention" if status in {"failed", "retry"}
                 else "Delivery is queued" if status == "pending" else "Delivery completed"
             )
+            cta_label = payload.get("cta_label")
+            if not cta_label:
+                cta_label = (
+                    "Review payment" if "payment" in row.kind or "billing" in row.kind
+                    else "View appointment" if "appointment" in row.kind or "schedule" in row.kind
+                    else "View patient item" if "patient" in row.kind
+                    else "View invitation" if "invitation" in row.kind
+                    else "Review recovery" if "password" in row.kind or "recovery" in row.kind
+                    else "View notification"
+                )
             items.append({
                 "id": row.id,
                 "kind": row.kind,
@@ -1150,6 +1160,7 @@ async def platform_notifications(
                 "severity": severity,
                 "created_at": row.created_at,
                 "unread": status in {"pending", "retry", "failed"},
+                "cta_label": str(cta_label),
             })
         platform_audit(db, actor.user_id, "platform-notifications.read")
         return {
