@@ -1,14 +1,18 @@
 from datetime import date
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
 from app.core.audit import audit
+from app.core.database import control_session
 from app.core.repository import add, required, serialize
 from app.identity.models import StaffUser
 from app.identity.service import db_session, permit
+from app.integrations.contracts import IntegrationFailure
+from app.integrations.models import PlatformAdapterDefault
+from app.integrations.registry import resolve_registered
 from app.operations.models import ProviderCredential
 from app.operations.service import credential_state
 from app.organizations.models import Location
@@ -36,6 +40,10 @@ class CredentialInput(BaseModel):
 
 class LocationInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
+    address: str = Field(default="", max_length=500)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    osm_place_id: str = Field(default="", max_length=120)
     timezone: str = Field(min_length=2, max_length=60)
     chairs: list[str] = Field(min_length=1, max_length=100)
     opening_hour: int = Field(ge=0, le=23)
@@ -62,6 +70,8 @@ class LocationInput(BaseModel):
             raise ValueError("Unknown location policy")
         if any(value < 0 or value > 10080 for value in self.policy.values()):
             raise ValueError("Invalid location policy value")
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be supplied together")
         return self
 
 
@@ -106,6 +116,44 @@ async def credential_alerts(db=Depends(db_session), actor=Depends(permit("operat
     return alerts
 
 
+@router.get("/geocode/search")
+async def search_location(
+    q: str = Query(min_length=3, max_length=180),
+    region: str = Query(default="CA", min_length=2, max_length=2, pattern="^[A-Za-z]{2}$"),
+    detail: bool = Query(default=False),
+    actor=Depends(permit("settings")),
+):
+    """Search the tenant's configured geocoding provider for a location address."""
+
+    del actor
+    async with control_session() as control:
+        defaults = (
+            await control.scalars(
+                select(PlatformAdapterDefault).where(
+                    PlatformAdapterDefault.capability == "geocoding_provider",
+                    PlatformAdapterDefault.active,
+                    PlatformAdapterDefault.region.in_(["*", region.upper()]),
+                )
+            )
+        ).all()
+    selected = next((row for row in defaults if row.region == region.upper()), None) or next(
+        (row for row in defaults if row.region == "*"), None
+    )
+    if selected is None:
+        raise HTTPException(503, "No geocoding provider is configured")
+    try:
+        provider = resolve_registered(
+            "geocoding_provider",
+            selected.provider_name,
+            region=region.upper(),
+            enforce_live=False,
+        )
+        search = getattr(provider, "search_addresses", provider.search) if detail else provider.search
+        return await search(q, region.upper(), limit=5)
+    except IntegrationFailure as error:
+        raise HTTPException(502, str(error)) from error
+
+
 @router.post("/credentials", status_code=201)
 async def create_credential(
     body: CredentialInput,
@@ -120,6 +168,18 @@ async def create_credential(
     current = next(value for credential, value in state if credential.id == row.id)
     audit(db, actor.user_id, "create", "provider_credentials", row.id)
     return credential_result(row, current)
+
+
+@router.post("/locations", status_code=201)
+async def create_location(
+    body: LocationInput,
+    db=Depends(db_session),
+    actor=Depends(permit("settings")),
+):
+    row = await add(db, Location, body.model_dump(), actor.user_id)
+    audit(db, actor.user_id, "create", "locations", row.id)
+    await db.flush()
+    return serialize(row)
 
 
 @router.put("/locations/{identifier}")

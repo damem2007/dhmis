@@ -14,6 +14,8 @@ SURFACE_FEATURE = {
     "portal": "patient_portal_enabled",
     "booking": "booking_enabled",
 }
+PLATFORM_HOST_SUFFIX = ".dhmis.local"
+PLATFORM_HOST_LABELS = {"admin", "api", "platform", "www"}
 
 
 def normalize_slug(value: str) -> str:
@@ -28,6 +30,21 @@ def normalize_hostname(value: str) -> str:
     if not hostname or not re.fullmatch(r"[a-z0-9.-]+", hostname):
         raise ValueError("Invalid hostname")
     return hostname
+
+
+def platform_hostname_slug(hostname: str) -> tuple[str, str | None] | None:
+    """Resolve the tenant key implied by the platform's wildcard hostnames."""
+
+    normalized = normalize_hostname(hostname)
+    if not normalized.endswith(PLATFORM_HOST_SUFFIX):
+        return None
+    prefix = normalized[: -len(PLATFORM_HOST_SUFFIX)]
+    labels = prefix.split(".") if prefix else []
+    if len(labels) == 1 and labels[0] not in PLATFORM_HOST_LABELS:
+        return labels[0], None
+    if len(labels) == 2 and labels[0] == "admin" and labels[1] not in PLATFORM_HOST_LABELS:
+        return labels[1], "back-office"
+    return None
 
 
 @dataclass
@@ -85,7 +102,23 @@ async def resolve_organization(
                         break
                 if resolution:
                     break
+            if resolution is None:
+                inferred = platform_hostname_slug(normalized_host)
+                if inferred:
+                    inferred_slug, inferred_surface = inferred
+                    organization = await db.scalar(
+                        select(Organization).where(Organization.slug == inferred_slug)
+                    )
+                    if organization:
+                        resolution = TenantResolution(
+                            organization,
+                            "platform-hostname",
+                            inferred_surface,
+                            normalized_host,
+                        )
     if resolution is None or resolution.organization.status != "active":
+        if resolution is not None:
+            raise HTTPException(404, f"Clinic is not active ({resolution.organization.status})")
         raise HTTPException(404, "Clinic not found")
     if surface and resolution.surface and surface != resolution.surface:
         raise HTTPException(404, "Clinic surface is not enabled on this domain")

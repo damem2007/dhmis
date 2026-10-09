@@ -61,7 +61,16 @@ async def booking_widget_config(slug: str):
         "allowed_origins": config.get("allowed_origins", []),
         "default_location_id": config.get("default_location_id", ""),
         "locations": [
-            {"id": row.id, "name": row.name, "timezone": row.timezone, "chairs": row.chairs}
+            {
+                "id": row.id,
+                "name": row.name,
+                "address": row.address,
+                "latitude": row.latitude,
+                "longitude": row.longitude,
+                "osm_place_id": row.osm_place_id,
+                "timezone": row.timezone,
+                "chairs": row.chairs,
+            }
             for row in locations
             if not location_ids or row.id in location_ids
         ],

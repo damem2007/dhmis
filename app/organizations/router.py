@@ -26,6 +26,7 @@ async def reference(db=Depends(db_session), actor=Depends(current_actor)):
         )
     ).all()
     return {
+        "region": actor.organization.region,
         "locations": [serialize(x) for x in locations],
         "providers": [{"id": x.id, "name": x.name} for x in providers],
         "currency": "CAD",

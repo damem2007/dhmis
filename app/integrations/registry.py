@@ -8,13 +8,23 @@ from importlib.metadata import entry_points
 
 from app.core.config import settings
 from app.integrations.contracts import (
-    AccountingExporter,
     ClaimsNetwork,
+    AccountingExporter,
+    GeocodingProvider,
     IntegrationFailure,
+    MapProvider,
     MessagingProvider,
     PaymentGateway,
     SignatureProvider,
 )
+from app.integrations.geocoding_providers import (
+    NominatimGeocodingProvider,
+    OverpassAddressProvider,
+    PhotonGeocodingProvider,
+    PostalAwareGeocodingProvider,
+    TomTomGeocodingProvider,
+)
+from app.integrations.map_providers import OpenStreetMapProvider, TomTomMapProvider
 from app.integrations.sandboxes import (
     SandboxAccounting,
     SandboxClaims,
@@ -45,6 +55,8 @@ CONTRACTS = {
     "email_provider": MessagingProvider,
     "sms_provider": MessagingProvider,
     "accounting_exporter": AccountingExporter,
+    "geocoding_provider": GeocodingProvider,
+    "map_provider": MapProvider,
 }
 REGISTRY = {capability: {} for capability in CONTRACTS}
 
@@ -80,12 +92,32 @@ def provider_options(*, include_live: bool | None = None):
 
 def resolve(organization, capability):
     name = selected_provider(organization, capability)
+    return resolve_registered(
+        capability,
+        name,
+        organization_id=organization.id,
+        region=organization.region,
+    )
+
+
+def resolve_registered(
+    capability: str,
+    name: str,
+    *,
+    organization_id: str = "",
+    region: str = "*",
+    enforce_live: bool = True,
+):
     registration = REGISTRY.get(capability, {}).get(name)
     if registration is None:
         raise IntegrationFailure("Selected provider has no installed adapter")
-    if not registration.sandbox and not settings().allow_live_integrations:
+    if enforce_live and not registration.sandbox and not settings().allow_live_integrations:
         raise IntegrationFailure("Live providers are disabled for the Phase 1 sandbox release")
-    context = ProviderContext(organization.id, organization.region, settings().provider_options.get(name, {}))
+    context = ProviderContext(
+        organization_id,
+        region,
+        settings().provider_options.get(name, {}),
+    )
     instance = registration.factory(context)
     if not isinstance(instance, CONTRACTS[capability]):
         raise IntegrationFailure("Provider does not implement the required contract")
@@ -134,3 +166,10 @@ from app.integrations.email_providers import MailjetEmailProvider, SMTPEmailProv
 
 register_provider("email_provider", "smtp", SMTPEmailProvider)
 register_provider("email_provider", "mailjet", MailjetEmailProvider)
+register_provider("geocoding_provider", "nominatim", NominatimGeocodingProvider, sandbox=True)
+register_provider("geocoding_provider", "tomtom", TomTomGeocodingProvider)
+register_provider("geocoding_provider", "photon", PhotonGeocodingProvider, sandbox=True)
+register_provider("geocoding_provider", "overpass-addresses", OverpassAddressProvider, sandbox=True)
+register_provider("geocoding_provider", "postal-aware", PostalAwareGeocodingProvider, sandbox=True)
+register_provider("map_provider", "openstreetmap", OpenStreetMapProvider, sandbox=True)
+register_provider("map_provider", "tomtom", TomTomMapProvider)

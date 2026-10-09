@@ -24,3 +24,12 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Run the backend checks with `pytest`. Keep `.env`, `.venv/`, Python caches, and local test caches out of version control.
 
+Address autocomplete and coordinate lookup use the registered `tomtom`
+geocoding provider. Set `PROVIDER_OPTIONS.tomtom.api_key` in `.env` before
+running migration `0024`. Migration `0025` configures the independent
+`map_provider` capability. The storefront map and directions links consume
+saved coordinates through the configured map provider and do not send patient
+data to the geocoder. `openstreetmap` and `tomtom` are available map
+providers; TomTom map rendering uses the same configured TomTom key as
+geocoding. Geocoding and map rendering can therefore be changed independently
+through the provider registry.

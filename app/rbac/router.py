@@ -53,6 +53,7 @@ from app.rbac.policy import (
     overlapping_rule_matches,
     validate_grants,
 )
+from app.rbac.registry import load_approved_registry
 from app.rbac.runtime import (
     approved_permissions,
     decide_platform,
@@ -892,6 +893,28 @@ async def _request_list(
     }
 
 
+def _friendly_approval_label(row, registry) -> str:
+    """Return a human-readable subject for an approval notification.
+
+    Approval request ids are useful for support and audit links, but they are
+    not meaningful in a notification. Runtime requests carry the approved
+    permission key, so resolve that key through the registry instead of
+    maintaining a second hard-coded label map in the UI.
+    """
+    if row.runtime_permission_key:
+        permission = registry.permissions.get((row.domain, row.runtime_permission_key))
+        if permission:
+            return permission.resource_name
+
+    return {
+        "approval-policy": "Approval policy",
+        "four-eyes-rules": "Maker-checker rules",
+        "role": "Role policy",
+        "role-assignment": "Role assignment",
+        "runtime-action": "Access action",
+    }.get(row.kind, "Access policy")
+
+
 async def _approval_notifications(
     db,
     request_model,
@@ -925,15 +948,17 @@ async def _approval_notifications(
         ).all()
     )
     is_checker = bool(role_keys.intersection(eligible_roles))
+    registry = load_approved_registry()
     items = []
     for row in rows:
+        label = _friendly_approval_label(row, registry)
         row_decisions = decisions_by_request.get(row.id, [])
         already_decided = any(item.user_id == actor_id for item in row_decisions)
         if row.status == "pending" and row.maker_id != actor_id and is_checker and not already_decided:
             items.append({
                 "request_id": row.id,
                 "kind": "action",
-                "title": f"{row.id[:8]} needs your approval",
+                "title": f"{label} needs your approval",
                 "detail": row.reason,
                 "status": row.status,
                 "created_at": row.created_at,
@@ -945,7 +970,7 @@ async def _approval_notifications(
             items.append({
                 "request_id": row.id,
                 "kind": "waiting",
-                "title": f"{row.id[:8]} is waiting for approval",
+                "title": f"{label} is waiting for approval",
                 "detail": row.reason,
                 "status": row.status,
                 "created_at": row.created_at,
@@ -959,7 +984,7 @@ async def _approval_notifications(
             items.append({
                 "request_id": row.id,
                 "kind": "decision",
-                "title": f"{row.id[:8]} was {row.status}",
+                "title": f"{label} was {row.status}",
                 "detail": row.reason,
                 "status": row.status,
                 "created_at": row.updated_at,
@@ -1772,6 +1797,13 @@ async def platform_request_decision(
             await withdraw_request(db, row, actor.user_id)
         else:
             role_keys = await _approver_role_keys(db, actor.user_id, Domain.PLATFORM)
+            super_admin_assignment = await db.scalar(
+                select(PlatformRoleAssignment)
+                .where(
+                    PlatformRoleAssignment.user_id == actor.user_id,
+                    PlatformRoleAssignment.role_id == "platform-super-admin",
+                )
+            )
             await decide_request(
                 db,
                 request_row=row,
@@ -1790,6 +1822,8 @@ async def platform_request_decision(
                 allow_maker=(
                     actor.user_id == "bootstrap"
                     or actor.is_bootstrap_operator
+                    or super_admin_assignment is not None
+                    or actor.role.strip().lower().replace(" ", "-") == "platform-super-admin"
                 ),
             )
         platform_audit(

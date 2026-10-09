@@ -8,6 +8,7 @@ from app.rbac.models import (
     PlatformFourEyesRule,
     PlatformRole,
     PlatformRoleAssignment,
+    PlatformRoleGrant,
     PlatformSoDRule,
     TenantApprovalPolicy,
     TenantFourEyesRule,
@@ -110,6 +111,30 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
         )
         db.add(role)
         await db.flush()
+    # The locked Platform Super Admin role is the reviewed control-plane
+    # authority. Keep its grants synchronized so newly approved permissions,
+    # including tenant onboarding activation, are effective without manual
+    # role editing.
+    existing_grants = {
+        row.permission_key
+        for row in (await db.scalars(select(PlatformRoleGrant).where(PlatformRoleGrant.role_id == role.id))).all()
+    }
+    db.add_all(
+        PlatformRoleGrant(
+            role_id=role.id,
+            permission_key=permission.key,
+            effect="allow",
+            scope="Platform",
+            created_by=actor_id,
+            updated_by=actor_id,
+        )
+        for permission in load_approved_registry().permissions.values()
+        if permission.domain.value == "platform"
+        and permission.reviewed
+        and not permission.retired
+        and permission.key not in existing_grants
+    )
+    await db.flush()
     users = (await db.scalars(select(PlatformUser).where(PlatformUser.active))).all()
     assigned = set(
         await db.scalars(

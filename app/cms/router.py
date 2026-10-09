@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.cms.models import CmsMediaAsset, CmsRevision
 from app.cms.schemas import CmsContentInput, DraftInput, MediaUploadInput, PublishInput
@@ -35,6 +35,8 @@ from app.identity.models import StaffUser
 from app.identity.router import throttle
 from app.identity.service import Actor, db_session, permit, role_names_with_module
 from app.integrations.configuration import attach_effective_adapters
+from app.integrations.contracts import IntegrationFailure
+from app.integrations.registry import resolve_registered
 from app.organizations.configuration import configure_tenant, tenant_settings
 from app.organizations.models import Location
 from app.organizations.tenant_resolution import resolve_organization
@@ -534,6 +536,20 @@ async def storefront_data(
     preview_revision: str = "",
     location_id: str | None = None,
 ):
+    adapter_names = await attach_effective_adapters(organization)
+    map_provider = None
+    map_provider_name = adapter_names.get("map_provider")
+    if map_provider_name:
+        try:
+            map_provider = resolve_registered(
+                "map_provider",
+                map_provider_name,
+                organization_id=organization.id,
+                region=organization.region,
+                enforce_live=False,
+            )
+        except IntegrationFailure:
+            map_provider = None
     async with organization_session(organization) as db:
         settings = await tenant_settings(db)
         revision = (
@@ -543,13 +559,27 @@ async def storefront_data(
         )
         content = override_content or (revision.content if revision else await default_content(db, organization))
         locations = (await db.scalars(select(Location).order_by(Location.name))).all()
-        providers = (
-            await db.scalars(
-                select(StaffUser).where(
-                    StaffUser.active, StaffUser.role.in_(await role_names_with_module(db, "clinical"))
-                )
+        # Keep the public booking flow usable for a freshly bootstrapped tenant
+        # before its first clinical staff profile has been created. Once a
+        # dentist or hygienist is configured, the role-filtered provider list
+        # remains authoritative.
+        clinical_roles = set(await role_names_with_module(db, "clinical"))
+        bootstrap_roles = {"admin", "organization-admin", "organization_admin", "tenant-super-admin", "Tenant Super Admin"}
+        content_provider_ids = [str(item.get("id")) for item in content.get("dentists", []) if item.get("id")]
+        provider_query = select(StaffUser).where(StaffUser.active)
+        if content_provider_ids:
+            provider_query = provider_query.where(
+                or_(StaffUser.role.in_(clinical_roles), StaffUser.id.in_(content_provider_ids))
             )
-        ).all()
+        else:
+            provider_query = provider_query.where(StaffUser.role.in_(clinical_roles))
+        providers = (await db.scalars(provider_query)).all()
+        if not providers:
+            providers = (
+                await db.scalars(
+                    select(StaffUser).where(StaffUser.active, StaffUser.role.in_(bootstrap_roles))
+                )
+            ).all()
     content_locations = {
         item.get("location_id"): item for item in content.get("locations", [])
     }
@@ -562,6 +592,7 @@ async def storefront_data(
         "cms_revision_id": preview_revision or (revision.id if revision else None),
         "cms_source": "preview" if preview_revision else "published" if revision else "provisioned-default",
         "booking_widget": settings.booking_widget,
+        "map_provider": map_provider_name,
         "services": [
             {
                 "id": row["id"],
@@ -579,15 +610,29 @@ async def storefront_data(
             {
                 "id": row.id,
                 "name": content_locations.get(row.id, {}).get("name") or row.name,
-                "address": content_locations.get(row.id, {}).get("address", ""),
+                "address": content_locations.get(row.id, {}).get("address") or row.address,
                 "phone": content_locations.get(row.id, {}).get("phone", ""),
                 "email": content_locations.get(row.id, {}).get("email", ""),
                 "timezone": content_locations.get(row.id, {}).get("timezone") or row.timezone,
                 "hours": content_locations.get(row.id, {}).get("hours", {}),
                 "closure_note": content_locations.get(row.id, {}).get("closure_note", ""),
+                "latitude": row.latitude,
+                "longitude": row.longitude,
+                "osm_place_id": row.osm_place_id,
                 "chairs": row.chairs,
                 "opening_hour": row.opening_hour,
                 "closing_hour": row.closing_hour,
+                "map": (
+                    map_provider.location_links(
+                        row.latitude,
+                        row.longitude,
+                        row.address,
+                    )
+                    if map_provider is not None
+                    and row.latitude is not None
+                    and row.longitude is not None
+                    else {}
+                ),
             }
             for row in locations
         ],

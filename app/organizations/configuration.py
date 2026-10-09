@@ -12,6 +12,12 @@ DEFAULT_POLICY = {
     "buffer_minutes": 0,
     "reminder_hours": 24,
 }
+COMMUNICATION_TEMPLATE_VARIABLES = (
+    "clinic_name", "clinic_phone", "patient_first_name", "provider_name",
+    "appointment_date", "appointment_time", "installment_amount", "due_date",
+    "plan_balance", "recipient_name", "role", "tenant_slug", "platform_name",
+    "invitation_expires_at", "invitation_expires_in", "invitation_link", "reset_link",
+)
 DEFAULT_COMMUNICATION_TEMPLATES = {
     "appointment-reminder": {
         "name": "Appointment reminder",
@@ -38,7 +44,7 @@ DEFAULT_COMMUNICATION_TEMPLATES = {
         "name": "Staff invitation",
         "channel": "email",
         "subject": "Your invitation to {{clinic_name}}",
-        "body": "Hi {{recipient_name}}, use this secure link to accept your staff invitation: {{invitation_link}}",
+        "body": "Hi {{recipient_name}},\n\nYou have been invited to join {{clinic_name}} as {{role}}.\n\nAccept your invitation: {{invitation_link}}\n\nThis link expires {{invitation_expires_at}} ({{invitation_expires_in}}). If you were not expecting this message, contact {{clinic_name}} support.",
         "active": True,
     },
     "password-reset": {
@@ -49,6 +55,7 @@ DEFAULT_COMMUNICATION_TEMPLATES = {
         "active": True,
     },
 }
+LEGACY_STAFF_INVITATION_BODY = "Hi {{recipient_name}}, use this secure link to accept your staff invitation: {{invitation_link}}"
 
 
 def render_communication_template(template: dict, values: dict[str, str]) -> tuple[str, str]:
@@ -77,7 +84,9 @@ async def platform_configuration(db) -> PlatformConfiguration:
         templates = deepcopy(row.communication_templates)
         changed = False
         for key, value in DEFAULT_COMMUNICATION_TEMPLATES.items():
-            if key not in templates:
+            if key not in templates or (
+                key == "staff-invitation" and templates[key].get("body") == LEGACY_STAFF_INVITATION_BODY
+            ):
                 templates[key] = deepcopy(value)
                 changed = True
         if changed:
@@ -101,7 +110,9 @@ async def tenant_settings(db) -> TenantSettings:
         templates = deepcopy(row.communication_templates)
         changed = False
         for key, value in DEFAULT_COMMUNICATION_TEMPLATES.items():
-            if key not in templates:
+            if key not in templates or (
+                key == "staff-invitation" and templates[key].get("body") == LEGACY_STAFF_INVITATION_BODY
+            ):
                 templates[key] = deepcopy(value)
                 changed = True
         if changed:

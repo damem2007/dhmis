@@ -98,5 +98,20 @@ class MessagingProvider(Protocol):
 
 
 @runtime_checkable
+class GeocodingProvider(Protocol):
+    async def search(self, query: str, region: str, limit: int = 5) -> list[dict]: ...
+
+
+@runtime_checkable
+class MapProvider(Protocol):
+    def location_links(
+        self,
+        latitude: float,
+        longitude: float,
+        address: str = "",
+    ) -> dict[str, str]: ...
+
+
+@runtime_checkable
 class AccountingExporter(Protocol):
     async def export(self, records: list[dict], idempotency_key: str) -> dict: ...

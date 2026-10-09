@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Boolean, Integer, String
+from sqlalchemy import JSON, Boolean, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, Record
@@ -86,6 +86,10 @@ class Location(Record, Base):
     __tablename__ = "locations"
     __table_args__ = {"schema": "tenant"}
     name: Mapped[str] = mapped_column(String(160))
+    address: Mapped[str] = mapped_column(String(500), default="")
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    osm_place_id: Mapped[str] = mapped_column(String(120), default="")
     timezone: Mapped[str] = mapped_column(String(60), default="America/Vancouver")
     chairs: Mapped[list] = mapped_column(JSON, default=lambda: ["Op 1", "Op 2", "Op 3"])
 

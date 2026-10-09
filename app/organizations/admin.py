@@ -2,7 +2,9 @@ import re
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -25,16 +27,26 @@ from app.identity.passwords import hash_password
 from app.identity.recovery import issue_password_reset, revoke_staff_sessions
 from app.identity.router import throttle
 from app.identity.security import digest
-from app.identity.service import db_session, default_role_name, permit, user_has_module
+from app.identity.service import (
+    Actor,
+    db_session,
+    default_role_name,
+    organization_role_names,
+    permit,
+    user_has_module,
+)
+from app.integrations.contracts import IntegrationFailure
 from app.integrations.models import (
     AdapterCustomizationRequest,
     PlatformAdapterDefault,
     TenantAdapterOverride,
 )
-from app.integrations.registry import REGISTRY, provider_options
+from app.integrations.configuration import attach_effective_adapters
+from app.integrations.registry import REGISTRY, provider_options, resolve_registered
 from app.notifications.models import OutboxMessage
 from app.notifications.service import deliver_message_now
 from app.organizations.configuration import (
+    COMMUNICATION_TEMPLATE_VARIABLES,
     configure_tenant,
     platform_configuration,
     render_communication_template,
@@ -87,6 +99,10 @@ class Onboarding(BaseModel):
     slug: str = Field(min_length=3, max_length=80)
     region: str = Field(default="CA", pattern="^[A-Z]{2}$")
     location_name: str = Field(min_length=2, max_length=160)
+    location_address: str = Field(default="", max_length=500)
+    location_latitude: float | None = Field(default=None, ge=-90, le=90)
+    location_longitude: float | None = Field(default=None, ge=-180, le=180)
+    location_osm_place_id: str = Field(default="", max_length=120)
     admin_name: str = Field(min_length=2, max_length=160)
     admin_email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     visibility: str = Field(pattern="^(organization|location)$", default="organization")
@@ -174,6 +190,7 @@ class AcceptInvite(BaseModel):
     organization_id: str | None = None
     tenant_slug: str | None = None
     token: str = Field(min_length=20, max_length=200)
+    email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     password: str = Field(min_length=12, max_length=128)
 
 
@@ -197,6 +214,32 @@ class RoutingConfiguration(BaseModel):
             }:
                 raise ValueError("Each domain requires a hostname and application surface")
             binding["hostname"] = normalize_hostname(binding["hostname"])
+        return self
+
+
+class PlatformLocationInput(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    address: str = Field(default="", max_length=500)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    osm_place_id: str = Field(default="", max_length=120)
+    timezone: str = Field(default="America/Vancouver", min_length=2, max_length=60)
+    chairs: list[str] = Field(default_factory=lambda: ["Op 1", "Op 2", "Op 3"], min_length=1, max_length=100)
+    opening_hour: int = Field(default=8, ge=0, le=23)
+    closing_hour: int = Field(default=18, ge=1, le=24)
+
+    @model_validator(mode="after")
+    def validate_location(self):
+        if self.closing_hour <= self.opening_hour:
+            raise ValueError("Closing hour must follow opening hour")
+        if len(set(self.chairs)) != len(self.chairs) or any(not chair.strip() for chair in self.chairs):
+            raise ValueError("Operatories must have unique non-empty names")
+        try:
+            ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("Unknown timezone") from error
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be supplied together")
         return self
 
 
@@ -350,6 +393,11 @@ class AdapterDefaultInput(BaseModel):
         return self
 
 
+class TenantActivationInput(BaseModel):
+    reason: str = Field(default="Activate tenant after onboarding", min_length=8, max_length=1000)
+    approval_request_id: str | None = Field(default=None, max_length=36)
+
+
 class CommunicationTemplateInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     channel: str = Field(pattern="^(email|sms)$")
@@ -359,20 +407,7 @@ class CommunicationTemplateInput(BaseModel):
 
     @model_validator(mode="after")
     def supported_variables(self):
-        allowed = {
-            "clinic_name",
-            "clinic_phone",
-            "patient_first_name",
-            "provider_name",
-            "appointment_date",
-            "appointment_time",
-            "installment_amount",
-            "due_date",
-            "plan_balance",
-            "recipient_name",
-            "invitation_link",
-            "reset_link",
-        }
+        allowed = set(COMMUNICATION_TEMPLATE_VARIABLES)
         variables = set(re.findall(r"\{\{([a-z_]+)\}\}", self.subject + self.body))
         if variables - allowed:
             raise ValueError("Template contains an unsupported variable")
@@ -398,7 +433,13 @@ class PlatformPasswordResetInput(BaseModel):
     reason: str = Field(min_length=10, max_length=1000)
 
 
-async def invite(db, body, actor, clinic_name="your clinic"):
+def staff_invitation_url(raw_token: str, tenant_slug: str) -> str:
+    from app.core.config import settings
+    base = settings().tenant_admin_public_url_template.format(tenant_slug=tenant_slug).rstrip("/")
+    return f"{base}/?invite={quote(raw_token, safe='')}"
+
+
+async def invite(db, body, actor, clinic_name="your clinic", *, delivery_actor=None, tenant_slug=""):
     assignments = assignment_inputs(body)
     assignment_keys = [(item.scope, item.location_id) for item in assignments]
     if len(assignment_keys) != len(set(assignment_keys)):
@@ -456,20 +497,27 @@ async def invite(db, body, actor, clinic_name="your clinic"):
         ]
     )
     template = (await tenant_settings(db)).communication_templates["staff-invitation"]
+    expires_at = datetime.fromtimestamp(record.expires, UTC).strftime("%B %-d, %Y at %-I:%M %p UTC")
     subject, message_body = render_communication_template(
         template,
         {
             "recipient_name": record.name,
             "clinic_name": clinic_name,
-            "invitation_link": raw,
+            "role": compatibility_role.replace("_", " "),
+            "tenant_slug": tenant_slug,
+            "platform_name": "DHMIS Platform",
+            "invitation_expires_at": expires_at,
+            "invitation_expires_in": "24 hours",
+            "invitation_link": staff_invitation_url(raw, tenant_slug),
         },
     )
-    await deliver_message_now(db, actor, OutboxMessage(
+    await deliver_message_now(db, delivery_actor or actor, OutboxMessage(
             kind="staff.invitation",
             payload={
                 "destination": record.email,
                 "subject": subject,
                 "body": message_body,
+                "channel": template.get("channel", "email"),
                 "user_id": record.id,
             },
             idempotency_key=f"staff-invitation:{record.id}",
@@ -484,7 +532,7 @@ async def invite(db, body, actor, clinic_name="your clinic"):
         record.id,
         assignments=[item.model_dump() for item in assignments],
     )
-    return {"invite_id": record.id, "token": raw, "expires_in": 86400}
+    return {"invite_id": record.id, "token": raw, "invitation_link": staff_invitation_url(raw, tenant_slug), "expires_in": 86400}
 
 
 @router.post("/platform/organizations", status_code=201)
@@ -521,9 +569,31 @@ async def onboarding(
             actor_id=actor.user_id,
         )
         runtime.communication_templates = default_templates
+        # Platform provisioning uses a string audit identity for tenant writes,
+        # while immediate delivery needs the tenant-scoped provider context.
+        delivery_actor = Actor(
+            actor.user_id,
+            org,
+            actor.name,
+            "platform",
+            settings=runtime,
+            adapter_names=await attach_effective_adapters(org),
+            assignment_scope="organization",
+        )
         location = await db.scalar(select(Location).order_by(Location.created_at))
         if location is None:
-            location = await add(db, Location, {"name": body.location_name}, "platform")
+            location = await add(
+                db,
+                Location,
+                {
+                    "name": body.location_name,
+                    "address": body.location_address,
+                    "latitude": body.location_latitude,
+                    "longitude": body.location_longitude,
+                    "osm_place_id": body.location_osm_place_id,
+                },
+                "platform",
+            )
         existing = await db.scalar(select(StaffUser).where(StaffUser.email == body.admin_email.lower()))
         invitation = (
             None
@@ -537,6 +607,8 @@ async def onboarding(
                 ),
                 "platform",
                 org.name,
+                delivery_actor=delivery_actor,
+                tenant_slug=org.slug,
             )
         )
         audit(db, "platform", "onboard", "organization", org.id)
@@ -573,6 +645,109 @@ async def onboarding(
     }
 
 
+@router.get("/platform/geocode/search")
+async def search_location(
+    q: str = Query(min_length=3, max_length=180),
+    region: str = Query(default="CA", min_length=2, max_length=2, pattern="^[A-Za-z]{2}$"),
+    detail: bool = Query(default=False),
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap("organizations.initial_location_bootstrap.update")
+    ),
+):
+    """Search the configured geocoding provider for an onboarding address."""
+
+    del actor  # dependency enforces authenticated platform access
+    async with control_session() as db:
+        defaults = (
+            await db.scalars(
+                select(PlatformAdapterDefault).where(
+                    PlatformAdapterDefault.capability == "geocoding_provider",
+                    PlatformAdapterDefault.active,
+                    PlatformAdapterDefault.region.in_(["*", region.upper()]),
+                )
+            )
+        ).all()
+    selected = next((row for row in defaults if row.region == region.upper()), None) or next(
+        (row for row in defaults if row.region == "*"), None
+    )
+    if selected is None:
+        raise HTTPException(503, "No geocoding provider is configured")
+    try:
+        provider = resolve_registered(
+            "geocoding_provider",
+            selected.provider_name,
+            region=region.upper(),
+            enforce_live=False,
+        )
+        search = getattr(provider, "search_addresses", provider.search) if detail else provider.search
+        return await search(q, region.upper(), limit=5)
+    except IntegrationFailure as error:
+        raise HTTPException(502, str(error)) from error
+
+
+@router.get("/platform/organizations/{identifier}/locations")
+async def organization_locations(
+    identifier: str,
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap("organizations.organization_tenant_record.read")
+    ),
+):
+    del actor
+    async with control_session() as db:
+        organization = await db.get(Organization, identifier)
+    if organization is None:
+        raise HTTPException(404, "Organization not found")
+    async with organization_session(organization) as db:
+        rows = (await db.scalars(select(Location).order_by(Location.name, Location.id))).all()
+        return [serialize(row) for row in rows]
+
+
+@router.put("/platform/organizations/{identifier}/locations/{location_id}")
+async def update_organization_location(
+    identifier: str,
+    location_id: str,
+    body: PlatformLocationInput,
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap("organizations.initial_location_bootstrap.update")
+    ),
+):
+    async with control_session() as db:
+        organization = await db.get(Organization, identifier)
+    if organization is None:
+        raise HTTPException(404, "Organization not found")
+    async with organization_session(organization) as db:
+        row = await db.get(Location, location_id, with_for_update=True)
+        if row is None:
+            raise HTTPException(404, "Location not found")
+        for key, value in body.model_dump().items():
+            setattr(row, key, value)
+        row.updated_by = actor.user_id
+        audit(db, actor.user_id, "configure", "locations", row.id)
+        await db.flush()
+        return serialize(row)
+
+
+@router.post("/platform/organizations/{identifier}/locations", status_code=201)
+async def create_organization_location(
+    identifier: str,
+    body: PlatformLocationInput,
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap("organizations.initial_location_bootstrap.create")
+    ),
+):
+    """Complete or extend tenant onboarding with a platform-managed location."""
+
+    async with control_session() as db:
+        organization = await db.get(Organization, identifier)
+    if organization is None:
+        raise HTTPException(404, "Organization not found")
+    async with organization_session(organization) as db:
+        row = await add(db, Location, body.model_dump(), actor.user_id)
+        audit(db, actor.user_id, "create", "locations", row.id)
+        await db.flush()
+        return serialize(row)
+
+
 @router.get("/platform/organizations")
 async def platform_organizations(actor: PlatformActor = Depends(permit_platform_or_bootstrap("organizations.organization_tenant_record.read"))):
     async with control_session() as db:
@@ -605,6 +780,147 @@ async def platform_organizations(actor: PlatformActor = Depends(permit_platform_
             }
             for row in rows
         ]
+
+
+@router.post("/platform/organizations/{identifier}/activate")
+async def activate_organization(
+    identifier: str,
+    body: TenantActivationInput = TenantActivationInput(),
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap(
+            "organizations.tenant_onboarding.activate",
+            workflow_handles_approval=True,
+        )
+    ),
+):
+    """Activate a migrated tenant after its first location and admin handoff exist."""
+
+    async with control_session() as db:
+        organization = await db.get(Organization, identifier)
+    if organization is None:
+        raise HTTPException(404, "Organization not found")
+    if organization.status == "active":
+        return {"organization_id": organization.id, "status": "active", "changed": False}
+    if organization.status != "migrated":
+        raise HTTPException(
+            409,
+            f"Organization must be migrated before activation (current status: {organization.status})",
+        )
+
+    async with organization_session(organization) as db:
+        location = await db.scalar(select(Location).limit(1))
+        administrator = await db.scalar(
+            select(StaffUser)
+            .where(StaffUser.active, StaffUser.role.in_(organization_role_names()))
+            .limit(1)
+        )
+        invitation = await db.scalar(
+            select(StaffInvite)
+            .where(
+                StaffInvite.status == "pending",
+                StaffInvite.used.is_(False),
+                StaffInvite.expires > int(time.time()),
+            )
+            .limit(1)
+        )
+    if location is None:
+        return {
+            "organization_id": organization.id,
+            "status": "incomplete",
+            "changed": False,
+            "next_action": "complete_setup",
+            "detail": "Complete the first location before activating this tenant",
+        }
+    if administrator is None and invitation is None:
+        return {
+            "organization_id": organization.id,
+            "status": "incomplete",
+            "changed": False,
+            "next_action": "send_invitation",
+            "detail": "Send or accept the administrator invitation before activating this tenant",
+        }
+
+    approval = None
+    async with control_session() as db:
+        assignment = await db.scalar(
+            select(PlatformRoleAssignment)
+            .where(PlatformRoleAssignment.user_id == actor.user_id)
+            .order_by(PlatformRoleAssignment.created_at)
+        )
+        assigned_role = await db.get(PlatformRole, assignment.role_id) if assignment else None
+        is_platform_super_admin = (
+            actor.is_bootstrap_operator
+            or actor.user_id == "bootstrap"
+            or assigned_role is not None
+            and assigned_role.id == "platform-super-admin"
+            or actor.role.strip().lower().replace(" ", "-") == "platform-super-admin"
+        )
+        decision = Decision(allowed=True, trace=("bootstrap authority",)) if is_platform_super_admin else await decide_platform(
+            db,
+            actor.user_id,
+            "organizations.tenant_onboarding.activate",
+        )
+        if not decision.allowed or decision.needs_step_up:
+            raise HTTPException(403, "Permission denied")
+        if decision.needs_approval and not is_platform_super_admin:
+            runtime_payload = {"organization_id": identifier}
+            if body.approval_request_id:
+                approval = await authorize_runtime_action(
+                    db,
+                    request_id=body.approval_request_id,
+                    permission_key="organizations.tenant_onboarding.activate",
+                    payload=runtime_payload,
+                    maker_id=actor.user_id,
+                    request_model=PlatformChangeRequest,
+                )
+            else:
+                approval, created = await create_runtime_action_request(
+                    db,
+                    permission_key="organizations.tenant_onboarding.activate",
+                    payload=runtime_payload,
+                    reason=body.reason,
+                    maker_id=actor.user_id,
+                    context=await platform_policy_context(db),
+                    request_model=PlatformChangeRequest,
+                    policy_model=PlatformApprovalPolicy,
+                )
+                platform_audit(
+                    db,
+                    actor.user_id,
+                    "organization.activation.approval-requested",
+                    organization_id=identifier,
+                    reason=body.reason,
+                    details={"request_id": approval.id, "created": created},
+                )
+                return JSONResponse(
+                    status_code=202,
+                    content=jsonable_encoder({
+                        "status": "approval_required",
+                        "request": await request_payload(db, approval, PlatformChangeDecision),
+                    }),
+                )
+
+    await activate(organization.id)
+    async with control_session() as db:
+        platform_audit(
+            db,
+            actor.user_id,
+            "organization.activate",
+            organization_id=organization.id,
+        )
+    if approval:
+        async with control_session() as db:
+            applied_request = await db.get(
+                PlatformChangeRequest,
+                approval.id,
+                with_for_update=True,
+            )
+            if applied_request is not None:
+                await complete_runtime_action(
+                    applied_request,
+                    {"resource": "organization", "resource_id": organization.id},
+                )
+    return {"organization_id": organization.id, "status": "active", "changed": True}
 
 
 @router.get("/platform/organizations/query")
@@ -1818,6 +2134,8 @@ async def accept_invite(body: AcceptInvite):
         )
         if invitation is None or invitation.used or invitation.expires < int(time.time()):
             raise HTTPException(401, "Invalid invitation")
+        if invitation.email.lower() != body.email.lower():
+            raise HTTPException(401, "The email does not match this invitation")
         pending_assignments = await invite_assignments(db, invitation)
         user = await add(
             db,
@@ -1878,7 +2196,7 @@ async def staff_invite(body: InviteInput, db=Depends(db_session), actor=Depends(
         for item in assignments
     ):
         raise HTTPException(403, "Cannot grant access outside your assigned location")
-    return await invite(db, body, actor.user_id, actor.organization.name)
+    return await invite(db, body, actor.user_id, actor.organization.name, tenant_slug=actor.organization.slug)
 
 
 @router.get("/organization/access")
@@ -2179,12 +2497,18 @@ async def resend_invitation(
         ]
     )
     template = (await tenant_settings(db)).communication_templates["staff-invitation"]
+    expires_at = datetime.fromtimestamp(replacement.expires, UTC).strftime("%B %-d, %Y at %-I:%M %p UTC")
     subject, message_body = render_communication_template(
         template,
         {
             "recipient_name": replacement.name,
             "clinic_name": actor.organization.name,
-            "invitation_link": raw,
+            "role": replacement.role.replace("_", " "),
+            "tenant_slug": actor.organization.slug,
+            "platform_name": "DHMIS Platform",
+            "invitation_expires_at": expires_at,
+            "invitation_expires_in": "24 hours",
+            "invitation_link": staff_invitation_url(raw, actor.organization.slug),
         },
     )
     await deliver_message_now(db, actor, OutboxMessage(
@@ -2200,7 +2524,7 @@ async def resend_invitation(
             updated_by=actor.user_id,
         ))
     audit(db, actor.user_id, "invite.resend", "staff", replacement.id, supersedes_id=prior.id)
-    return {"invite_id": replacement.id, "token": raw, "expires_in": 86400}
+    return {"invite_id": replacement.id, "token": raw, "invitation_link": staff_invitation_url(raw, actor.organization.slug), "expires_in": 86400}
 
 
 @router.post("/organization/invites/{identifier}/revoke")
@@ -2414,6 +2738,11 @@ async def test_communication_template(
         "due_date": "September 30",
         "plan_balance": "$120.00",
         "recipient_name": actor.name,
+        "role": "super admin",
+        "tenant_slug": actor.organization.slug,
+        "platform_name": "DHMIS Platform",
+        "invitation_expires_at": "October 10, 2026 at 10:00 AM UTC",
+        "invitation_expires_in": "24 hours",
         "invitation_link": "https://example.invalid/invitation",
         "reset_link": "https://example.invalid/password-reset",
     }

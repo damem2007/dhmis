@@ -31,6 +31,7 @@ from app.platform_identity.service import (
     platform_audit,
 )
 from app.rbac.bootstrap import seed_platform_super_admin
+from app.rbac.models import PlatformRole, PlatformRoleAssignment
 
 router = APIRouter(prefix="/platform/auth", tags=["Platform identity"])
 
@@ -255,12 +256,18 @@ async def me(actor: PlatformActor = Depends(current_platform)):
         user = await db.get(PlatformUser, actor.user_id)
         if user is None:
             raise HTTPException(404, "Platform profile not found")
+        assignment = await db.scalar(
+            select(PlatformRoleAssignment)
+            .where(PlatformRoleAssignment.user_id == user.id)
+            .order_by(PlatformRoleAssignment.created_at)
+        )
+        assigned_role = await db.get(PlatformRole, assignment.role_id) if assignment else None
         return {
             "id": user.id,
             "name": user.name,
             "email": user.email,
-            "role": "Platform Super Admin" if actor.is_bootstrap_operator else user.role,
-            "role_id": "platform-super-admin" if actor.is_bootstrap_operator else None,
+            "role": "Platform Super Admin" if actor.is_bootstrap_operator else (assigned_role.name if assigned_role else user.role),
+            "role_id": "platform-super-admin" if actor.is_bootstrap_operator else (assigned_role.id if assigned_role else None),
             "is_bootstrap_operator": actor.is_bootstrap_operator,
             "mfa_enabled": user.mfa_enabled,
         }
@@ -272,6 +279,12 @@ async def update_me(body: ProfileUpdate, actor: PlatformActor = Depends(current_
         user = await db.get(PlatformUser, actor.user_id)
         if user is None:
             raise HTTPException(404, "Platform profile not found")
+        assignment = await db.scalar(
+            select(PlatformRoleAssignment)
+            .where(PlatformRoleAssignment.user_id == user.id)
+            .order_by(PlatformRoleAssignment.created_at)
+        )
+        assigned_role = await db.get(PlatformRole, assignment.role_id) if assignment else None
         user.name = body.name.strip()
         user.updated_by = actor.user_id
         platform_audit(db, actor.user_id, "platform.profile.update")
@@ -279,8 +292,8 @@ async def update_me(body: ProfileUpdate, actor: PlatformActor = Depends(current_
             "id": user.id,
             "name": user.name,
             "email": user.email,
-            "role": "Platform Super Admin" if actor.is_bootstrap_operator else user.role,
-            "role_id": "platform-super-admin" if actor.is_bootstrap_operator else None,
+            "role": "Platform Super Admin" if actor.is_bootstrap_operator else (assigned_role.name if assigned_role else user.role),
+            "role_id": "platform-super-admin" if actor.is_bootstrap_operator else (assigned_role.id if assigned_role else None),
             "is_bootstrap_operator": actor.is_bootstrap_operator,
             "mfa_enabled": user.mfa_enabled,
         }
