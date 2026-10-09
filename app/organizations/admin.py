@@ -1110,6 +1110,58 @@ async def platform_access_query(
         return {"page": page, "page_size": page_size, "total": total, "items": items[start:start + page_size]}
 
 
+@router.get("/platform/notifications")
+async def platform_notifications(
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=10, le=50),
+    actor: PlatformActor = Depends(platform_or_bootstrap),
+):
+    async with control_session() as db:
+        total = await db.scalar(select(func.count()).select_from(PlatformOutboxMessage)) or 0
+        unread_count = await db.scalar(
+            select(func.count()).select_from(PlatformOutboxMessage).where(
+                PlatformOutboxMessage.status.in_(("pending", "retry", "failed"))
+            )
+        ) or 0
+        rows = (
+            await db.scalars(
+                select(PlatformOutboxMessage)
+                .order_by(PlatformOutboxMessage.created_at.desc())
+                .offset((page - 1) * size)
+                .limit(size)
+            )
+        ).all()
+        items = []
+        for row in rows:
+            status = row.status or "pending"
+            severity = "danger" if status in {"failed", "retry"} else "warning" if status == "pending" else "info"
+            kind = row.kind.replace(".", " ").replace("_", " ").strip().capitalize()
+            payload = row.payload if isinstance(row.payload, dict) else {}
+            detail = payload.get("subject") or payload.get("title") or (
+                "Delivery failed and needs attention" if status in {"failed", "retry"}
+                else "Delivery is queued" if status == "pending" else "Delivery completed"
+            )
+            items.append({
+                "id": row.id,
+                "kind": row.kind,
+                "title": kind,
+                "detail": str(detail),
+                "status": status,
+                "severity": severity,
+                "created_at": row.created_at,
+                "unread": status in {"pending", "retry", "failed"},
+            })
+        platform_audit(db, actor.user_id, "platform-notifications.read")
+        return {
+            "items": items,
+            "page": page,
+            "size": size,
+            "total": total,
+            "pages": (total + size - 1) // size,
+            "unread_count": unread_count,
+        }
+
+
 @router.post("/platform/invites", status_code=201)
 async def create_platform_invite(
     body: PlatformInviteInput,
