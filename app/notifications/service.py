@@ -22,7 +22,7 @@ async def deliver_message_now(db, actor, message: OutboxMessage, now=None) -> Ou
         db.add(message)
         return message
     channel = message.payload.get("channel", "email")
-    message.attempts += 1
+    message.attempts = (message.attempts or 0) + 1
     try:
         capability = f"{channel}_provider" if f"{channel}_provider" in actor.adapter_names else "messaging_provider"
         result = await resolve(actor.organization, capability).send(MessageRequest(
@@ -77,7 +77,7 @@ async def dispatch(db, actor, now=None):
                 ),
                 body=message.payload["body"],
             )
-            message.attempts += 1
+            message.attempts = (message.attempts or 0) + 1
             try:
                 capability = (
                     channel + "_provider"
@@ -154,7 +154,7 @@ async def dispatch(db, actor, now=None):
             subject=subject or "Appointment reminder",
             body=body,
         )
-        message.attempts += 1
+        message.attempts = (message.attempts or 0) + 1
         try:
             capability = (
                 channel + "_provider"
