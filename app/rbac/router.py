@@ -1699,7 +1699,7 @@ async def platform_requests(
         pattern="^(pending|approved|applied|rejected|withdrawn|expired|conflicted)$",
     ),
     mine: bool = False,
-    actor: PlatformActor = Depends(permit_platform("access.platform_role.read")),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("access.platform_role.read")),
 ):
     async with control_session() as db:
         result = await _request_list(
@@ -1718,7 +1718,7 @@ async def platform_requests(
 
 @router.get("/platform/rbac/notifications")
 async def platform_approval_notifications(
-    actor: PlatformActor = Depends(permit_platform("access.platform_role.read")),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("access.platform_role.read")),
 ):
     async with control_session() as db:
         policy = await load_approval_policy(db, PlatformApprovalPolicy)
@@ -1737,7 +1737,7 @@ async def platform_approval_notifications(
 
 @router.post("/platform/rbac/notifications/seen")
 async def mark_platform_approval_notifications_seen(
-    actor: PlatformActor = Depends(permit_platform("access.platform_role.read")),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("access.platform_role.read")),
 ):
     async with control_session() as db:
         result = await _mark_decision_notifications_seen(
@@ -1756,7 +1756,7 @@ async def platform_request_decision(
     action: str = Path(pattern="^(approve|reject|withdraw)$"),
     body: RequestDecisionInput = RequestDecisionInput(),
     actor: PlatformActor = Depends(
-        permit_platform("access.platform_role.update", workflow_handles_approval=True)
+        permit_platform_or_bootstrap("access.platform_role.update", workflow_handles_approval=True)
     ),
 ):
     async with control_session() as db:

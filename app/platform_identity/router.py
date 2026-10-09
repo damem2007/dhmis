@@ -25,6 +25,7 @@ from app.platform_identity.models import (
 from app.platform_identity.service import (
     PlatformActor,
     current_platform,
+    platform_or_bootstrap,
     issue_platform_token,
     platform_audit,
 )
@@ -227,7 +228,7 @@ async def verify(body: VerifyInput):
 
 
 @router.get("/me")
-async def me(actor: PlatformActor = Depends(current_platform)):
+async def me(actor: PlatformActor = Depends(platform_or_bootstrap)):
     return {"id": actor.user_id, "name": actor.name, "role": actor.role}
 
 
