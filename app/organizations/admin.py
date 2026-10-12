@@ -1,3 +1,4 @@
+import json
 import re
 import secrets
 import time
@@ -55,7 +56,13 @@ from app.organizations.configuration import (
 )
 from app.organizations.extraction import extraction_preflight
 from app.organizations.jurisdiction import jurisdiction
-from app.organizations.models import Location, Organization, PlatformCommercialAccount
+from app.organizations.models import (
+    Location,
+    Organization,
+    PlatformCommercialAccount,
+    PlatformPlan,
+    PlatformSubscription,
+)
 from app.organizations.provisioning import activate, provision
 from app.organizations.tenant_resolution import (
     normalize_hostname,
@@ -124,6 +131,29 @@ class Onboarding(BaseModel):
                 raise ValueError("Each domain requires a hostname and application surface")
             binding["hostname"] = normalize_hostname(binding["hostname"])
         return self
+
+
+class PlatformPlanInput(BaseModel):
+    code: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    name: str = Field(min_length=2, max_length=120)
+    description: str = Field(default="", max_length=500)
+    price_cents: int = Field(default=0, ge=0)
+    currency: str = Field(default="CAD", min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
+    interval: str = Field(default="month", pattern=r"^(month|year|one_time)$")
+    trial_days: int = Field(default=14, ge=0, le=365)
+    max_locations: int | None = Field(default=None, ge=1, le=10000)
+    features: list[str] = Field(default_factory=list, max_length=30)
+    active: bool = True
+
+
+class SubscriptionInput(BaseModel):
+    plan_code: str = Field(min_length=2, max_length=80)
+    status: str = Field(default="trialing", pattern=r"^(trialing|active|paused|past_due|canceled)$")
+    trial_ends_at: datetime | None = None
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    cancel_at_period_end: bool = False
+    external_reference: str = Field(default="", max_length=180)
 
 
 class AccessAssignmentInput(BaseModel):
@@ -1250,6 +1280,179 @@ async def platform_jobs(
         },
         "recent": recent[:50],
     }
+
+
+def platform_plan_payload(plan: PlatformPlan) -> dict:
+    features = plan.features or []
+    if isinstance(features, str):
+        try:
+            features = json.loads(features)
+        except json.JSONDecodeError:
+            features = [features]
+    return {
+        "id": plan.id,
+        "code": plan.code,
+        "name": plan.name,
+        "description": plan.description,
+        "price_cents": plan.price_cents,
+        "currency": plan.currency,
+        "interval": plan.interval,
+        "trial_days": plan.trial_days,
+        "max_locations": plan.max_locations,
+        "features": features,
+        "active": plan.active,
+    }
+
+
+@router.get("/public/platform/plans")
+async def public_platform_plans():
+    """Return active commercial plans for the public Platform Home pricing page."""
+    async with control_session() as db:
+        plans = (await db.scalars(select(PlatformPlan).where(PlatformPlan.active))).all()
+        plans = sorted(plans, key=lambda plan: (plan.price_cents == 0, plan.price_cents, plan.name))
+        return [platform_plan_payload(plan) for plan in plans]
+
+
+@router.get("/platform/billing/plans")
+async def platform_billing_plans(
+    include_inactive: bool = Query(default=False),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.plan_assignment.read")),
+):
+    async with control_session() as db:
+        query = select(PlatformPlan).order_by(PlatformPlan.active.desc(), PlatformPlan.price_cents, PlatformPlan.name)
+        if not include_inactive:
+            query = query.where(PlatformPlan.active)
+        plans = (await db.scalars(query)).all()
+        platform_audit(db, actor.user_id, "billing.plans.read", details={"include_inactive": include_inactive})
+        return [platform_plan_payload(plan) for plan in plans]
+
+
+@router.post("/platform/billing/plans", status_code=201)
+async def create_platform_plan(
+    body: PlatformPlanInput,
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.plan_assignment.create")),
+):
+    async with control_session() as db:
+        if await db.scalar(select(PlatformPlan).where(PlatformPlan.code == body.code)):
+            raise HTTPException(409, "A plan with this code already exists")
+        plan = PlatformPlan(**body.model_dump(), created_by=actor.user_id, updated_by=actor.user_id)
+        db.add(plan)
+        await db.flush()
+        platform_audit(db, actor.user_id, "billing.plan.create", details={"plan_code": plan.code})
+        return platform_plan_payload(plan)
+
+
+@router.put("/platform/billing/plans/{plan_id}")
+async def update_platform_plan(
+    plan_id: str,
+    body: PlatformPlanInput,
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.plan_assignment.update")),
+):
+    async with control_session() as db:
+        plan = await db.get(PlatformPlan, plan_id)
+        if plan is None:
+            raise HTTPException(404, "Plan not found")
+        duplicate = await db.scalar(select(PlatformPlan).where(PlatformPlan.code == body.code, PlatformPlan.id != plan_id))
+        if duplicate:
+            raise HTTPException(409, "A plan with this code already exists")
+        for key, value in body.model_dump().items():
+            setattr(plan, key, value)
+        plan.updated_by = actor.user_id
+        await db.flush()
+        platform_audit(db, actor.user_id, "billing.plan.update", details={"plan_id": plan_id, "plan_code": plan.code})
+        return platform_plan_payload(plan)
+
+
+@router.get("/platform/billing/subscriptions")
+async def platform_billing_subscriptions(
+    search: str | None = Query(default=None, max_length=160),
+    status: str | None = Query(default=None, max_length=30),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=10, le=100),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.subscription_record.read")),
+):
+    async with control_session() as db:
+        query = (
+            select(Organization, PlatformCommercialAccount, PlatformSubscription, PlatformPlan)
+            .join(PlatformCommercialAccount, PlatformCommercialAccount.organization_id == Organization.id)
+            .outerjoin(PlatformSubscription, PlatformSubscription.organization_id == Organization.id)
+            .outerjoin(PlatformPlan, PlatformPlan.id == PlatformSubscription.plan_id)
+        )
+        if search:
+            term = f"%{search.strip()}%"
+            query = query.where(or_(Organization.name.ilike(term), Organization.slug.ilike(term)))
+        if status:
+            query = query.where(PlatformSubscription.status == status)
+        total = await db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+        rows = (await db.execute(query.order_by(Organization.name, Organization.id).offset((page - 1) * page_size).limit(page_size))).all()
+        items = []
+        for organization, account, subscription, plan in rows:
+            items.append({
+                "organization_id": organization.id,
+                "organization_name": organization.name,
+                "slug": organization.slug,
+                "account_status": account.account_status,
+                "legacy_plan_code": account.plan_code,
+                "subscription_status": subscription.status if subscription else account.subscription_status,
+                "subscription": {
+                    "id": subscription.id,
+                    "plan": platform_plan_payload(plan) if plan else None,
+                    "trial_ends_at": subscription.trial_ends_at,
+                    "current_period_start": subscription.current_period_start,
+                    "current_period_end": subscription.current_period_end,
+                    "cancel_at_period_end": subscription.cancel_at_period_end,
+                    "external_reference": subscription.external_reference,
+                } if subscription else None,
+            })
+        platform_audit(db, actor.user_id, "billing.subscriptions.read", details={"page": page, "page_size": page_size})
+        return {"page": page, "page_size": page_size, "total": total, "items": jsonable_encoder(items)}
+
+
+@router.put("/platform/organizations/{identifier}/subscription")
+async def set_platform_subscription(
+    identifier: str,
+    body: SubscriptionInput,
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.subscription_record.update", workflow_handles_approval=True)),
+):
+    async with control_session() as db:
+        organization = await db.get(Organization, identifier)
+        if organization is None:
+            raise HTTPException(404, "Organization not found")
+        plan = await db.scalar(select(PlatformPlan).where(PlatformPlan.code == body.plan_code))
+        if plan is None or (not plan.active and body.status != "canceled"):
+            raise HTTPException(400, "The selected plan is unavailable")
+        account = await db.scalar(select(PlatformCommercialAccount).where(PlatformCommercialAccount.organization_id == identifier))
+        if account is None:
+            account = PlatformCommercialAccount(organization_id=identifier, created_by=actor.user_id, updated_by=actor.user_id)
+            db.add(account)
+        subscription = await db.scalar(select(PlatformSubscription).where(PlatformSubscription.organization_id == identifier))
+        if subscription is None:
+            subscription = PlatformSubscription(organization_id=identifier, created_by=actor.user_id, updated_by=actor.user_id)
+            db.add(subscription)
+        subscription.plan_id = plan.id
+        subscription.status = body.status
+        subscription.trial_ends_at = body.trial_ends_at
+        subscription.current_period_start = body.current_period_start
+        subscription.current_period_end = body.current_period_end
+        subscription.cancel_at_period_end = body.cancel_at_period_end
+        subscription.external_reference = body.external_reference
+        subscription.updated_by = actor.user_id
+        account.plan_code = plan.code
+        account.subscription_status = body.status
+        account.updated_by = actor.user_id
+        organization.plan = plan.code
+        organization.updated_by = actor.user_id
+        await db.flush()
+        platform_audit(db, actor.user_id, "billing.subscription.update", organization_id=identifier, details={"plan_code": plan.code, "status": body.status})
+        return {
+            "organization_id": identifier,
+            "plan": platform_plan_payload(plan),
+            "status": subscription.status,
+            "trial_ends_at": subscription.trial_ends_at,
+            "current_period_start": subscription.current_period_start,
+            "current_period_end": subscription.current_period_end,
+            "cancel_at_period_end": subscription.cancel_at_period_end,
+        }
 
 
 @router.get("/platform/financial-operations/query")

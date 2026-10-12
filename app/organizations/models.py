@@ -1,4 +1,6 @@
-from sqlalchemy import JSON, Boolean, Float, Integer, String
+from datetime import datetime
+
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, Record
@@ -46,6 +48,39 @@ class PlatformCommercialAccount(Record, Base):
     subscription_status: Mapped[str] = mapped_column(String(30), default="not_configured")
     external_reference: Mapped[str] = mapped_column(String(180), default="")
     commercial_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class PlatformPlan(Record, Base):
+    """Platform-owned plan catalogue used for tenant subscriptions."""
+
+    __tablename__ = "platform_plans"
+    __table_args__ = {"schema": "dhmis_control"}
+    code: Mapped[str] = mapped_column(String(80), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(String(500), default="")
+    price_cents: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(3), default="CAD")
+    interval: Mapped[str] = mapped_column(String(20), default="month")
+    trial_days: Mapped[int] = mapped_column(Integer, default=14)
+    max_locations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    features: Mapped[list] = mapped_column(JSON, default=list)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PlatformSubscription(Record, Base):
+    """Current platform subscription for one tenant organization."""
+
+    __tablename__ = "platform_subscriptions"
+    __table_args__ = {"schema": "dhmis_control"}
+    organization_id: Mapped[str] = mapped_column(String(36), unique=True)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("dhmis_control.platform_plans.id"))
+    status: Mapped[str] = mapped_column(String(30), default="trialing")
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    external_reference: Mapped[str] = mapped_column(String(180), default="")
+    subscription_metadata: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
 
 class PlatformConfiguration(Record, Base):
