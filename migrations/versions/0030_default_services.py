@@ -5,7 +5,6 @@ from alembic import context, op
 
 from app.billing.defaults import DEFAULT_SERVICES
 
-
 revision = "0030_default_services"
 down_revision = "0029_provider_flag"
 branch_labels = None
