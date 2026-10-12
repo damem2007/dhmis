@@ -10,9 +10,16 @@ from app.core.audit import AuditEvent, audit
 from app.core.repository import serialize
 from app.identity.models import StaffUser
 from app.identity.service import current_actor, db_session, permit, role_names_with_module
+from app.organizations.entitlements import resolve_entitlements
 from app.organizations.models import Location
 
 router = APIRouter(prefix="/organization", tags=["Organization"])
+
+
+@router.get("/entitlements")
+async def entitlements(actor=Depends(current_actor)):
+    """Return the tenant's resolved platform entitlements for UI gating and upgrade prompts."""
+    return {"organization_id": actor.organization.id, "entitlements": await resolve_entitlements(actor.organization.id)}
 
 
 @router.get("/reference")

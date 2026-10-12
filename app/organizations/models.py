@@ -67,6 +67,34 @@ class PlatformPlan(Record, Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class PlatformFeature(Record, Base):
+    """Stable, server-enforced entitlement in the platform feature catalogue."""
+
+    __tablename__ = "platform_features"
+    __table_args__ = {"schema": "dhmis_control"}
+    key: Mapped[str] = mapped_column(String(120), unique=True)
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(String(500), default="")
+    category: Mapped[str] = mapped_column(String(80), default="core")
+    feature_type: Mapped[str] = mapped_column(String(20), default="boolean")
+    unit: Mapped[str] = mapped_column(String(40), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PlatformPlanFeature(Record, Base):
+    """A plan's typed value for one catalogue feature."""
+
+    __tablename__ = "platform_plan_features"
+    __table_args__ = {"schema": "dhmis_control"}
+    plan_id: Mapped[str] = mapped_column(ForeignKey("dhmis_control.platform_plans.id"))
+    feature_id: Mapped[str] = mapped_column(ForeignKey("dhmis_control.platform_features.id"))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unlimited: Mapped[bool] = mapped_column(Boolean, default=False)
+    included_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    public_label: Mapped[str] = mapped_column(String(180), default="")
+
+
 class PlatformSubscription(Record, Base):
     """Current platform subscription for one tenant organization."""
 

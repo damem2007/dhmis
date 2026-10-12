@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.audit import audit
 from app.core.database import control_session
@@ -15,6 +15,7 @@ from app.integrations.models import PlatformAdapterDefault
 from app.integrations.registry import resolve_registered
 from app.operations.models import ProviderCredential
 from app.operations.service import credential_state
+from app.organizations.entitlements import require_location_capacity
 from app.organizations.models import Location
 
 router = APIRouter(prefix="/operations", tags=["Practice operations"])
@@ -176,6 +177,8 @@ async def create_location(
     db=Depends(db_session),
     actor=Depends(permit("settings")),
 ):
+    current_count = await db.scalar(select(func.count()).select_from(Location)) or 0
+    await require_location_capacity(actor.organization.id, current_count)
     row = await add(db, Location, body.model_dump(), actor.user_id)
     audit(db, actor.user_id, "create", "locations", row.id)
     await db.flush()

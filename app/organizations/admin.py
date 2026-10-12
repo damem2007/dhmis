@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 
 from app.billing.models import Invoice
 from app.core.audit import audit
@@ -54,13 +54,16 @@ from app.organizations.configuration import (
     render_communication_template,
     tenant_settings,
 )
+from app.organizations.entitlements import require_location_capacity
 from app.organizations.extraction import extraction_preflight
 from app.organizations.jurisdiction import jurisdiction
 from app.organizations.models import (
     Location,
     Organization,
     PlatformCommercialAccount,
+    PlatformFeature,
     PlatformPlan,
+    PlatformPlanFeature,
     PlatformSubscription,
 )
 from app.organizations.provisioning import activate, provision
@@ -133,6 +136,15 @@ class Onboarding(BaseModel):
         return self
 
 
+class PlanEntitlementInput(BaseModel):
+    key: str = Field(min_length=3, max_length=120)
+    enabled: bool = True
+    value: int | None = Field(default=None, ge=0)
+    unlimited: bool = False
+    included_quantity: int | None = Field(default=None, ge=0)
+    public_label: str = Field(default="", max_length=180)
+
+
 class PlatformPlanInput(BaseModel):
     code: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     name: str = Field(min_length=2, max_length=120)
@@ -143,6 +155,17 @@ class PlatformPlanInput(BaseModel):
     trial_days: int = Field(default=14, ge=0, le=365)
     max_locations: int | None = Field(default=None, ge=1, le=10000)
     features: list[str] = Field(default_factory=list, max_length=30)
+    entitlements: list[PlanEntitlementInput] | None = None
+    active: bool = True
+
+
+class PlatformFeatureInput(BaseModel):
+    key: str = Field(min_length=3, max_length=120, pattern=r"^[a-z0-9][a-z0-9_.-]*$")
+    name: str = Field(min_length=2, max_length=160)
+    description: str = Field(default="", max_length=500)
+    category: str = Field(default="core", min_length=2, max_length=80)
+    feature_type: str = Field(default="boolean", pattern=r"^(boolean|limit|metered)$")
+    unit: str = Field(default="", max_length=40)
     active: bool = True
 
 
@@ -779,6 +802,8 @@ async def create_organization_location(
     if organization is None:
         raise HTTPException(404, "Organization not found")
     async with organization_session(organization) as db:
+        current_count = await db.scalar(select(func.count()).select_from(Location)) or 0
+        await require_location_capacity(identifier, current_count)
         row = await add(db, Location, body.model_dump(), actor.user_id)
         audit(db, actor.user_id, "create", "locations", row.id)
         await db.flush()
@@ -1304,13 +1329,129 @@ def platform_plan_payload(plan: PlatformPlan) -> dict:
     }
 
 
+async def platform_plan_payload_with_entitlements(db, plan: PlatformPlan) -> dict:
+    payload = platform_plan_payload(plan)
+    rows = (
+        await db.execute(
+            select(PlatformPlanFeature, PlatformFeature)
+            .join(PlatformFeature, PlatformFeature.id == PlatformPlanFeature.feature_id)
+            .where(PlatformPlanFeature.plan_id == plan.id, PlatformFeature.active)
+            .order_by(PlatformFeature.category, PlatformFeature.name)
+        )
+    ).all()
+    payload["entitlements"] = [
+        {
+            "key": feature.key,
+            "name": feature.name,
+            "description": feature.description,
+            "category": feature.category,
+            "feature_type": feature.feature_type,
+            "unit": feature.unit,
+            "enabled": assignment.enabled,
+            "value": assignment.value,
+            "unlimited": assignment.unlimited,
+            "included_quantity": assignment.included_quantity,
+            "public_label": assignment.public_label,
+        }
+        for assignment, feature in rows
+    ]
+    location = next((item for item in payload["entitlements"] if item["key"] == "limit.locations"), None)
+    if location:
+        payload["max_locations"] = None if location["unlimited"] else location["value"]
+    return payload
+
+
+async def sync_plan_entitlements(db, plan: PlatformPlan, entitlements: list[PlanEntitlementInput] | None, actor_id: str):
+    if entitlements is None:
+        return
+    await db.execute(delete(PlatformPlanFeature).where(PlatformPlanFeature.plan_id == plan.id))
+    location_limit: PlanEntitlementInput | None = next((item for item in entitlements if item.key == "limit.locations"), None)
+    if location_limit is not None:
+        plan.max_locations = None if location_limit.unlimited else location_limit.value
+    for item in entitlements:
+        feature = await db.scalar(select(PlatformFeature).where(PlatformFeature.key == item.key, PlatformFeature.active))
+        if feature is None:
+            raise HTTPException(422, f"Unknown or inactive plan feature: {item.key}")
+        if feature.feature_type == "boolean" and (item.value is not None or item.unlimited or item.included_quantity is not None):
+            raise HTTPException(422, f"Boolean feature {item.key} cannot have a numeric value")
+        if feature.feature_type == "limit" and not item.unlimited and item.value is None:
+            raise HTTPException(422, f"Limit feature {item.key} requires a value or unlimited")
+        db.add(PlatformPlanFeature(
+            plan_id=plan.id,
+            feature_id=feature.id,
+            enabled=item.enabled,
+            value=item.value,
+            unlimited=item.unlimited,
+            included_quantity=item.included_quantity,
+            public_label=item.public_label,
+            created_by=actor_id,
+            updated_by=actor_id,
+        ))
+
+
+@router.get("/platform/billing/features")
+async def platform_billing_features(
+    include_inactive: bool = Query(default=False),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.plan_assignment.read")),
+):
+    async with control_session() as db:
+        query = select(PlatformFeature).order_by(PlatformFeature.category, PlatformFeature.name)
+        if not include_inactive:
+            query = query.where(PlatformFeature.active)
+        rows = (await db.scalars(query)).all()
+        platform_audit(db, actor.user_id, "billing.features.read", details={"include_inactive": include_inactive})
+        return [
+            {
+                "id": row.id, "key": row.key, "name": row.name, "description": row.description,
+                "category": row.category, "feature_type": row.feature_type, "unit": row.unit, "active": row.active,
+            }
+            for row in rows
+        ]
+
+
+@router.post("/platform/billing/features", status_code=201)
+async def create_platform_feature(
+    body: PlatformFeatureInput,
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.plan_assignment.create")),
+):
+    async with control_session() as db:
+        if await db.scalar(select(PlatformFeature).where(PlatformFeature.key == body.key)):
+            raise HTTPException(409, "A feature with this key already exists")
+        feature = PlatformFeature(**body.model_dump(), created_by=actor.user_id, updated_by=actor.user_id)
+        db.add(feature)
+        await db.flush()
+        platform_audit(db, actor.user_id, "billing.feature.create", details={"feature_key": feature.key})
+        return {"id": feature.id, **body.model_dump()}
+
+
+@router.put("/platform/billing/features/{feature_id}")
+async def update_platform_feature(
+    feature_id: str,
+    body: PlatformFeatureInput,
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.plan_assignment.update")),
+):
+    async with control_session() as db:
+        feature = await db.get(PlatformFeature, feature_id)
+        if feature is None:
+            raise HTTPException(404, "Feature not found")
+        duplicate = await db.scalar(select(PlatformFeature).where(PlatformFeature.key == body.key, PlatformFeature.id != feature_id))
+        if duplicate:
+            raise HTTPException(409, "A feature with this key already exists")
+        for key, value in body.model_dump().items():
+            setattr(feature, key, value)
+        feature.updated_by = actor.user_id
+        await db.flush()
+        platform_audit(db, actor.user_id, "billing.feature.update", details={"feature_id": feature_id, "feature_key": feature.key})
+        return {"id": feature.id, **body.model_dump()}
+
+
 @router.get("/public/platform/plans")
 async def public_platform_plans():
     """Return active commercial plans for the public Platform Home pricing page."""
     async with control_session() as db:
         plans = (await db.scalars(select(PlatformPlan).where(PlatformPlan.active))).all()
         plans = sorted(plans, key=lambda plan: (plan.price_cents == 0, plan.price_cents, plan.name))
-        return [platform_plan_payload(plan) for plan in plans]
+        return [await platform_plan_payload_with_entitlements(db, plan) for plan in plans]
 
 
 @router.get("/platform/billing/plans")
@@ -1324,7 +1465,7 @@ async def platform_billing_plans(
             query = query.where(PlatformPlan.active)
         plans = (await db.scalars(query)).all()
         platform_audit(db, actor.user_id, "billing.plans.read", details={"include_inactive": include_inactive})
-        return [platform_plan_payload(plan) for plan in plans]
+        return [await platform_plan_payload_with_entitlements(db, plan) for plan in plans]
 
 
 @router.post("/platform/billing/plans", status_code=201)
@@ -1335,11 +1476,12 @@ async def create_platform_plan(
     async with control_session() as db:
         if await db.scalar(select(PlatformPlan).where(PlatformPlan.code == body.code)):
             raise HTTPException(409, "A plan with this code already exists")
-        plan = PlatformPlan(**body.model_dump(), created_by=actor.user_id, updated_by=actor.user_id)
+        plan = PlatformPlan(**body.model_dump(exclude={"entitlements"}), created_by=actor.user_id, updated_by=actor.user_id)
         db.add(plan)
         await db.flush()
+        await sync_plan_entitlements(db, plan, body.entitlements, actor.user_id)
         platform_audit(db, actor.user_id, "billing.plan.create", details={"plan_code": plan.code})
-        return platform_plan_payload(plan)
+        return await platform_plan_payload_with_entitlements(db, plan)
 
 
 @router.put("/platform/billing/plans/{plan_id}")
@@ -1355,12 +1497,13 @@ async def update_platform_plan(
         duplicate = await db.scalar(select(PlatformPlan).where(PlatformPlan.code == body.code, PlatformPlan.id != plan_id))
         if duplicate:
             raise HTTPException(409, "A plan with this code already exists")
-        for key, value in body.model_dump().items():
+        for key, value in body.model_dump(exclude={"entitlements"}).items():
             setattr(plan, key, value)
         plan.updated_by = actor.user_id
+        await sync_plan_entitlements(db, plan, body.entitlements, actor.user_id)
         await db.flush()
         platform_audit(db, actor.user_id, "billing.plan.update", details={"plan_id": plan_id, "plan_code": plan.code})
-        return platform_plan_payload(plan)
+        return await platform_plan_payload_with_entitlements(db, plan)
 
 
 @router.get("/platform/billing/subscriptions")
@@ -1396,7 +1539,7 @@ async def platform_billing_subscriptions(
                 "subscription_status": subscription.status if subscription else account.subscription_status,
                 "subscription": {
                     "id": subscription.id,
-                    "plan": platform_plan_payload(plan) if plan else None,
+                    "plan": await platform_plan_payload_with_entitlements(db, plan) if plan else None,
                     "trial_ends_at": subscription.trial_ends_at,
                     "current_period_start": subscription.current_period_start,
                     "current_period_end": subscription.current_period_end,
@@ -1446,7 +1589,7 @@ async def set_platform_subscription(
         platform_audit(db, actor.user_id, "billing.subscription.update", organization_id=identifier, details={"plan_code": plan.code, "status": body.status})
         return {
             "organization_id": identifier,
-            "plan": platform_plan_payload(plan),
+            "plan": await platform_plan_payload_with_entitlements(db, plan),
             "status": subscription.status,
             "trial_ends_at": subscription.trial_ends_at,
             "current_period_start": subscription.current_period_start,
