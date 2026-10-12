@@ -35,18 +35,19 @@ from app.identity.service import (
     permit,
     user_has_module,
 )
+from app.integrations.configuration import attach_effective_adapters
 from app.integrations.contracts import IntegrationFailure
 from app.integrations.models import (
     AdapterCustomizationRequest,
     PlatformAdapterDefault,
     TenantAdapterOverride,
 )
-from app.integrations.configuration import attach_effective_adapters
 from app.integrations.registry import REGISTRY, provider_options, resolve_registered
 from app.notifications.models import OutboxMessage
 from app.notifications.service import deliver_message_now
 from app.organizations.configuration import (
     COMMUNICATION_TEMPLATE_VARIABLES,
+    DEFAULT_LOGO_URL,
     configure_tenant,
     platform_configuration,
     render_communication_template,
@@ -74,7 +75,6 @@ from app.platform_identity.service import PlatformActor, platform_audit, platfor
 from app.rbac.bootstrap import seed_tenant_super_admin
 from app.rbac.default_roles import default_role_definitions
 from app.rbac.dependencies import permit_platform_or_bootstrap
-from app.rbac.policy import Decision
 from app.rbac.models import (
     PlatformApprovalPolicy,
     PlatformChangeDecision,
@@ -82,8 +82,10 @@ from app.rbac.models import (
     PlatformRole,
     PlatformRoleAssignment,
     TenantRole,
+    TenantRoleAssignment,
     TenantRoleGrant,
 )
+from app.rbac.policy import Decision
 from app.rbac.runtime import decide_platform, platform_policy_context
 from app.rbac.workflow import (
     authorize_runtime_action,
@@ -171,6 +173,7 @@ class InviteInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     role: str | None = None
+    is_provider: bool = False
     location_ids: list[str] = Field(default_factory=list)
     assignments: list[AccessAssignmentInput] = Field(default_factory=list)
 
@@ -306,6 +309,7 @@ class BookingWidgetConfiguration(BaseModel):
 class OrgSettings(BaseModel):
     visibility: str = Field(pattern="^(organization|location)$")
     branding: dict[str, str] = Field(default_factory=dict)
+    logo_url: str | None = Field(default=None, max_length=1000)
     policy: Policy
     jurisdiction_policy: dict = Field(default_factory=dict)
     public_content: PublicContent | None = None
@@ -329,6 +333,8 @@ class OrgSettings(BaseModel):
         for key, value in self.branding.items():
             if key not in allowed or not re.fullmatch(r"[a-zA-Z0-9#(), .%\-]+", value):
                 raise ValueError("Unsupported theme token")
+        if self.logo_url and not self.logo_url.startswith(("/", "http://", "https://")):
+            raise ValueError("Logo must be a relative asset path or HTTP(S) URL")
         policy = self.jurisdiction_policy
         if set(policy) - {"consent_notice", "retention_days", "tax_rate_basis_points"}:
             raise ValueError("Unknown jurisdiction setting")
@@ -422,7 +428,7 @@ class PlatformDefaultsInput(BaseModel):
 class PlatformInviteInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
-    role: str = Field(default="platform_admin", pattern=r"^platform_admin$")
+    role: str = Field(default="platform-super-admin", min_length=1, max_length=160)
 
 
 class PlatformUserStatusInput(BaseModel):
@@ -474,6 +480,7 @@ async def invite(db, body, actor, clinic_name="your clinic", *, delivery_actor=N
             "name": body.name,
             "email": body.email.lower(),
             "role": compatibility_role,
+            "is_provider": body.is_provider,
             "location_ids": compatibility_locations,
             "token_hash": digest(raw),
             "expires": now + 86400,
@@ -541,7 +548,7 @@ async def onboarding(
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("organizations.tenant_onboarding.provision")),
 ):
     # Validate branding through the same settings contract used after onboarding.
-    OrgSettings(visibility=body.visibility, branding=body.branding, policy=Policy())
+    OrgSettings(visibility=body.visibility, branding=body.branding, logo_url="", policy=Policy())
     async with control_session() as db:
         defaults = await platform_configuration(db)
         default_policy = Policy(**defaults.default_policy).model_dump()
@@ -1378,6 +1385,7 @@ async def set_platform_communication_template(
 async def platform_access_query(
     search: str | None = Query(default=None, max_length=160),
     status: str | None = Query(default=None, pattern="^(active|disabled|pending|expired|revoked)$"),
+    role: str | None = Query(default=None, max_length=80),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=10, le=100),
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("access.platform_user.read")),
@@ -1395,6 +1403,10 @@ async def platform_access_query(
             assignments_by_user.setdefault(user_id, []).append(
                 {"role": role_name, "role_id": role_id, "scope": "Platform", "location_id": None}
             )
+        platform_roles = {
+            role.id: role.name
+            for role in (await db.scalars(select(PlatformRole))).all()
+        }
         users = (await db.scalars(select(PlatformUser).order_by(PlatformUser.created_at.desc()))).all()
         invitations = (
             await db.scalars(select(PlatformInvite).order_by(PlatformInvite.created_at.desc()))
@@ -1405,7 +1417,7 @@ async def platform_access_query(
                 "kind": "user",
                 "name": row.name,
                 "email": row.email,
-                "role": row.role,
+                "role": (assignments_by_user.get(row.id) or [{}])[0].get("role") or row.role,
                 "assignments": assignments_by_user.get(row.id, []),
                 "status": "active" if row.active else "disabled",
                 "mfa_enabled": row.mfa_enabled,
@@ -1419,7 +1431,8 @@ async def platform_access_query(
                 "kind": "invitation",
                 "name": row.name,
                 "email": row.email,
-                "role": row.role,
+                "role": platform_roles.get(row.role, row.role),
+                "role_id": row.role,
                 "status": "expired" if row.status == "pending" and row.expires <= now else row.status,
                 "mfa_enabled": False,
                 "created_at": row.created_at,
@@ -1432,6 +1445,18 @@ async def platform_access_query(
             items = [item for item in items if term in f"{item['name']} {item['email']}".lower()]
         if status:
             items = [item for item in items if item["status"] == status]
+        if role:
+            role_value = role.strip().lower()
+            items = [
+                item for item in items
+                if any(
+                    role_value in {str(assignment.get("role_id", "")).lower(), str(assignment.get("role", "")).lower()}
+                    for assignment in item.get("assignments", [])
+                ) or role_value in {
+                    str(item.get("role_id", "")).lower(),
+                    str(item.get("role", "")).lower(),
+                }
+            ]
         items.sort(key=lambda item: item["created_at"], reverse=True)
         total = len(items)
         start = (page - 1) * page_size
@@ -1511,6 +1536,17 @@ async def create_platform_invite(
     async with control_session() as db:
         if await db.scalar(select(PlatformUser).where(PlatformUser.email == body.email.lower())):
             raise HTTPException(409, "Platform user already exists")
+        role_identifier = body.role.strip()
+        if role_identifier == "platform_admin":
+            role_identifier = "platform-super-admin"
+        role = await db.scalar(
+            select(PlatformRole).where(
+                (PlatformRole.id == role_identifier)
+                | (func.lower(PlatformRole.name) == role_identifier.lower())
+            )
+        )
+        if role is None or role.status != "published":
+            raise HTTPException(422, "Select a published platform role")
         old = (
             await db.scalars(
                 select(PlatformInvite).where(
@@ -1524,7 +1560,7 @@ async def create_platform_invite(
         row = PlatformInvite(
             name=body.name,
             email=body.email.lower(),
-            role=body.role,
+            role=role.id,
             token_hash=digest(raw),
             expires=int(time.time()) + 86400,
             created_by=actor.user_id,
@@ -1540,6 +1576,11 @@ async def create_platform_invite(
             raw_token=raw,
             reference_id=row.id,
             actor_id=actor.user_id,
+            template_values={
+                "role": role.name,
+                "invitation_expires_at": datetime.fromtimestamp(row.expires, UTC).strftime("%B %-d, %Y at %-I:%M %p UTC"),
+                "invitation_expires_in": "24 hours",
+            },
         )
         platform_audit(db, actor.user_id, "platform-invite.create", details={"invite_id": row.id})
         return {
@@ -1581,6 +1622,11 @@ async def resend_platform_invite(
             raw_token=raw,
             reference_id=replacement.id,
             actor_id=actor.user_id,
+            template_values={
+                "role": (await db.get(PlatformRole, replacement.role)).name,
+                "invitation_expires_at": datetime.fromtimestamp(replacement.expires, UTC).strftime("%B %-d, %Y at %-I:%M %p UTC"),
+                "invitation_expires_in": "24 hours",
+            },
         )
         platform_audit(db, actor.user_id, "platform-invite.resend", details={"invite_id": replacement.id})
         return {
@@ -2144,6 +2190,7 @@ async def accept_invite(body: AcceptInvite):
                 "email": invitation.email,
                 "name": invitation.name,
                 "role": invitation.role,
+                "is_provider": invitation.is_provider,
                 "location_ids": invitation.location_ids,
                 "password_hash": hash_password(body.password),
             },
@@ -2239,6 +2286,7 @@ async def organization_access(db=Depends(db_session), actor=Depends(permit("sett
                 "name": row.name,
                 "email": row.email,
                 "role": row.role,
+                "is_provider": row.is_provider,
                 "location_ids": row.location_ids,
                 "assignments": [
                     {
@@ -2251,6 +2299,8 @@ async def organization_access(db=Depends(db_session), actor=Depends(permit("sett
                 ],
                 "mfa_enabled": row.mfa_enabled,
                 "active": row.active,
+                "suspended_until": row.suspended_until,
+                "archived_at": row.archived_at,
                 "photo_url": row.photo_url,
                 "external_identity": row.external_subject is not None,
                 "created_at": row.created_at,
@@ -2294,7 +2344,7 @@ async def organization_access_roles(db=Depends(db_session), actor=Depends(permit
             {
                 "id": role.id,
                 "name": role.name,
-                "locked": role.locked,
+                "locked": role.id == "tenant-super-admin",
                 "scopes": scopes,
             }
         )
@@ -2320,24 +2370,59 @@ async def organization_access_query(
             needle = f"%{search.strip()}%"
             query = query.where(or_(StaffUser.name.ilike(needle), StaffUser.email.ilike(needle)))
         if status == "active":
-            query = query.where(StaffUser.active)
+            query = query.where(StaffUser.active, StaffUser.archived_at.is_(None), or_(StaffUser.suspended_until.is_(None), StaffUser.suspended_until <= datetime.now(UTC)))
         elif status == "inactive":
-            query = query.where(StaffUser.active.is_(False))
+            query = query.where(StaffUser.active.is_(False), StaffUser.archived_at.is_(None))
+        elif status == "suspended":
+            query = query.where(StaffUser.active, StaffUser.archived_at.is_(None), StaffUser.suspended_until > datetime.now(UTC))
+        elif status == "archived":
+            query = query.where(StaffUser.archived_at.is_not(None))
         if role or location_id or actor.assignment_scope != "organization":
-            assignment_filter = select(StaffLocationAssignment.id).where(
-                StaffLocationAssignment.user_id == StaffUser.id,
-                StaffLocationAssignment.active,
-            )
-            if actor.assignment_scope != "organization":
-                assignment_filter = assignment_filter.where(
-                    StaffLocationAssignment.location_id.in_(actor.location_ids)
-                )
+            role_row = None
             if role:
-                assignment_filter = assignment_filter.where(StaffLocationAssignment.role == role)
-            if location_id:
-                assignment_filter = assignment_filter.where(
-                    StaffLocationAssignment.location_id == location_id
+                role_row = await db.scalar(
+                    select(TenantRole).where(
+                        TenantRole.status == "published",
+                        or_(
+                            TenantRole.id == role,
+                            func.lower(TenantRole.name) == role.strip().lower(),
+                        ),
+                    )
                 )
+            if role_row is not None:
+                assignment_filter = select(TenantRoleAssignment.id).where(
+                    TenantRoleAssignment.user_id == StaffUser.id,
+                    TenantRoleAssignment.role_id == role_row.id,
+                )
+                if role_row.id != "tenant-super-admin":
+                    super_admin_assignment = select(TenantRoleAssignment.id).where(
+                        TenantRoleAssignment.user_id == StaffUser.id,
+                        TenantRoleAssignment.role_id == "tenant-super-admin",
+                    ).exists()
+                    assignment_filter = assignment_filter.where(~super_admin_assignment)
+                if actor.assignment_scope != "organization":
+                    assignment_filter = assignment_filter.where(
+                        TenantRoleAssignment.location_id.in_(actor.location_ids)
+                    )
+                if location_id:
+                    assignment_filter = assignment_filter.where(
+                        TenantRoleAssignment.location_id == location_id
+                    )
+            else:
+                assignment_filter = select(StaffLocationAssignment.id).where(
+                    StaffLocationAssignment.user_id == StaffUser.id,
+                    StaffLocationAssignment.active,
+                )
+                if actor.assignment_scope != "organization":
+                    assignment_filter = assignment_filter.where(
+                        StaffLocationAssignment.location_id.in_(actor.location_ids)
+                    )
+                if role:
+                    assignment_filter = assignment_filter.where(StaffLocationAssignment.role == role)
+                if location_id:
+                    assignment_filter = assignment_filter.where(
+                        StaffLocationAssignment.location_id == location_id
+                    )
             query = query.where(assignment_filter.exists())
         total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
         rows = (
@@ -2354,6 +2439,7 @@ async def organization_access_query(
                     "name": row.name,
                     "email": row.email,
                     "role": row.role,
+                    "is_provider": row.is_provider,
                     "location_ids": row.location_ids,
                     "assignments": [
                         {
@@ -2366,6 +2452,8 @@ async def organization_access_query(
                     ],
                     "mfa_enabled": row.mfa_enabled,
                     "active": row.active,
+                    "suspended_until": row.suspended_until,
+                    "archived_at": row.archived_at,
                     "photo_url": row.photo_url,
                     "external_identity": row.external_subject is not None,
                     "created_at": row.created_at,
@@ -2472,6 +2560,7 @@ async def resend_invitation(
             "name": prior.name,
             "email": prior.email,
             "role": prior.role,
+            "is_provider": prior.is_provider,
             "location_ids": prior.location_ids,
             "token_hash": digest(raw),
             "expires": int(time.time()) + 86400,
@@ -2551,6 +2640,35 @@ class StaffPasswordReset(BaseModel):
     reason: str = Field(min_length=10, max_length=1000)
 
 
+class StaffSuspension(BaseModel):
+    hours: int = Field(ge=1, le=8760)
+
+
+async def _change_staff_lifecycle(identifier: str, db, actor, *, active: bool | None = None, suspended_until=None, archived: bool | None = None):
+    user = await required(db, StaffUser, identifier, lock=True)
+    if user.id == actor.user_id and (active is False or archived is True or suspended_until is not None):
+        raise HTTPException(409, "You cannot suspend, disable, or archive your own administrator account")
+    if archived is True and user.active:
+        raise HTTPException(409, "Disable the staff account before archiving it")
+    if archived is False:
+        user.archived_at = None
+        user.active = True
+    elif archived is True:
+        user.archived_at = datetime.now(UTC)
+        user.active = False
+    elif active is not None:
+        user.active = active
+    if suspended_until is not None:
+        user.suspended_until = suspended_until
+    elif active is False or archived is not False:
+        user.suspended_until = None
+    await revoke_staff_sessions(db, user, actor_id=actor.user_id)
+    user.token_version += 1
+    user.updated_by = actor.user_id
+    audit(db, actor.user_id, "staff.lifecycle", "staff", user.id, active=user.active, suspended_until=user.suspended_until, archived=bool(user.archived_at))
+    return {"id": user.id, "active": user.active, "suspended_until": user.suspended_until, "archived_at": user.archived_at}
+
+
 @router.post("/organization/staff/{identifier}/password-reset", status_code=202)
 async def reset_staff_password(
     identifier: str,
@@ -2580,12 +2698,33 @@ async def reset_staff_password(
     return {"status": "queued"}
 
 
+@router.post("/organization/staff/{identifier}/suspend")
+async def suspend_staff(identifier: str, body: StaffSuspension, db=Depends(db_session), actor=Depends(permit("settings"))):
+    return await _change_staff_lifecycle(identifier, db, actor, active=True, suspended_until=datetime.now(UTC) + timedelta(hours=body.hours))
+
+
+@router.post("/organization/staff/{identifier}/disable")
+async def disable_staff(identifier: str, db=Depends(db_session), actor=Depends(permit("settings"))):
+    return await _change_staff_lifecycle(identifier, db, actor, active=False)
+
+
+@router.post("/organization/staff/{identifier}/archive")
+async def archive_staff(identifier: str, db=Depends(db_session), actor=Depends(permit("settings"))):
+    return await _change_staff_lifecycle(identifier, db, actor, archived=True)
+
+
+@router.post("/organization/staff/{identifier}/restore")
+async def restore_staff(identifier: str, db=Depends(db_session), actor=Depends(permit("settings"))):
+    return await _change_staff_lifecycle(identifier, db, actor, archived=False)
+
+
 @router.get("/organization/settings")
 async def get_settings(db=Depends(db_session), actor=Depends(permit("settings"))):
     row = await tenant_settings(db)
     return {
         "visibility": row.visibility,
         "branding": row.branding,
+        "logo_url": row.logo_url or DEFAULT_LOGO_URL,
         "policy": Policy(**row.policy).model_dump(),
         "effective_adapters": actor.adapter_names,
         "jurisdiction_policy": row.jurisdiction_policy,
@@ -2683,8 +2822,14 @@ async def set_settings(body: OrgSettings, db=Depends(db_session), actor=Depends(
         await required(db, Service, identifier)
     for identifier in body.booking_widget.allowed_provider_ids if body.booking_widget else []:
         provider = await required(db, StaffUser, identifier)
-        if not provider.active or not await user_has_module(db, provider, "clinical"):
-            raise HTTPException(422, "Widget providers must be active clinical providers")
+        if (
+            not provider.active
+            or not provider.is_provider
+            or provider.archived_at is not None
+            or (provider.suspended_until and provider.suspended_until > datetime.now(UTC))
+            or not await user_has_module(db, provider, "clinical")
+        ):
+            raise HTTPException(422, "Widget providers must be active, explicitly enabled clinical providers")
     await configure_tenant(db, actor_id=actor.user_id, **body.model_dump())
     audit(db, actor.user_id, "configure", "organization", actor.organization.id)
     return body.model_dump()
@@ -2777,8 +2922,11 @@ async def staff(db=Depends(db_session), actor=Depends(permit("settings"))):
             "name": x.name,
             "email": x.email,
             "role": x.role,
+            "is_provider": x.is_provider,
             "mfa_enabled": x.mfa_enabled,
             "active": x.active,
+            "suspended_until": x.suspended_until,
+            "archived_at": x.archived_at,
             "location_ids": x.location_ids,
         }
         for x in users
@@ -2788,6 +2936,7 @@ async def staff(db=Depends(db_session), actor=Depends(permit("settings"))):
 class StaffAccess(BaseModel):
     role: str | None = None
     active: bool
+    is_provider: bool | None = None
     location_ids: list[str] = Field(default_factory=list)
     assignments: list[AccessAssignmentInput] = Field(default_factory=list)
 
@@ -2817,6 +2966,8 @@ async def staff_access(
         if item.location_id:
             await required(db, Location, item.location_id)
     user = await required(db, StaffUser, identifier, lock=True)
+    if user.archived_at is not None and body.active:
+        raise HTTPException(409, "Restore the archived staff account before enabling it")
     current = await user_assignments(db, user)
     current_by_key = {(item.scope, item.location_id): item for item in current}
     now = datetime.now(UTC)
@@ -2865,6 +3016,8 @@ async def staff_access(
         )
     user.role = requested[0].role
     user.active = body.active
+    if body.is_provider is not None:
+        user.is_provider = body.is_provider
     user.location_ids = [item.location_id for item in requested if item.location_id]
     user.token_version += 1
     user.updated_by = actor.user_id

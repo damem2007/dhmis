@@ -27,13 +27,20 @@ async def seed_default_tenant_roles(db, actor_id: str = "rbac-bootstrap") -> dic
                 name=name,
                 description=f"Default {name} role; permissions are stored as editable RBAC grants.",
                 status="published",
-                locked=True,
+                # Tenant Super Admin is the only protected tenant role. The
+                # operational default roles are intentionally editable by
+                # governed tenant administrators.
+                locked=False,
                 created_by=actor_id,
                 updated_by=actor_id,
             )
             db.add(role)
             await db.flush()
             roles[name] = role
+        elif role.locked:
+            # Older tenants were seeded with every default role locked. Keep
+            # the existing records aligned with the current tenant RBAC model.
+            role.locked = False
     registry = load_approved_registry()
     existing = {
         (row.role_id, row.permission_key)
@@ -80,7 +87,16 @@ async def sync_legacy_assignments(db, roles: dict[str, TenantRole], actor_id: st
         (row.user_id, row.role_id, row.level, row.location_id)
         for row in (await db.scalars(select(TenantRoleAssignment))).all()
     }
+    super_admin_users = set(
+        await db.scalars(
+            select(TenantRoleAssignment.user_id).where(
+                TenantRoleAssignment.role_id == "tenant-super-admin"
+            )
+        )
+    )
     for assignment in legacy:
+        if assignment.user_id in super_admin_users:
+            continue
         role = roles.get(assignment.role)
         if role is None:
             continue

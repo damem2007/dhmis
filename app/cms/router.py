@@ -10,8 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 
+from app.billing.models import Service
 from app.cms.models import CmsMediaAsset, CmsRevision
 from app.cms.schemas import CmsContentInput, DraftInput, MediaUploadInput, PublishInput
 from app.cms.service import (
@@ -24,6 +25,7 @@ from app.cms.service import (
     public_content,
     published_revision,
     revision_payload,
+    sync_catalog_services,
     sync_media,
 )
 from app.core.audit import audit
@@ -111,7 +113,9 @@ async def save_draft(
     if row.status != "draft":
         raise HTTPException(409, "Published revisions are immutable")
     assert_current(row, body.expected_updated_at)
-    row.content = body.content.model_dump(mode="json")
+    row.content = await sync_catalog_services(
+        db, body.content.model_dump(mode="json")
+    )
     row.applicability = body.applicability.model_dump(mode="json")
     row.validation = {}
     row.updated_at = datetime.now(UTC)
@@ -558,28 +562,43 @@ async def storefront_data(
             else await published_revision(db, location_id=location_id)
         )
         content = override_content or (revision.content if revision else await default_content(db, organization))
-        locations = (await db.scalars(select(Location).order_by(Location.name))).all()
-        # Keep the public booking flow usable for a freshly bootstrapped tenant
-        # before its first clinical staff profile has been created. Once a
-        # dentist or hygienist is configured, the role-filtered provider list
-        # remains authoritative.
-        clinical_roles = set(await role_names_with_module(db, "clinical"))
-        bootstrap_roles = {"admin", "organization-admin", "organization_admin", "tenant-super-admin", "Tenant Super Admin"}
-        content_provider_ids = [str(item.get("id")) for item in content.get("dentists", []) if item.get("id")]
-        provider_query = select(StaffUser).where(StaffUser.active)
-        if content_provider_ids:
-            provider_query = provider_query.where(
-                or_(StaffUser.role.in_(clinical_roles), StaffUser.id.in_(content_provider_ids))
+        catalog_services = {
+            row.id: row
+            for row in (await db.scalars(select(Service))).all()
+        }
+        def catalog_service_for(item: dict):
+            return catalog_services.get(item.get("catalog_service_id") or item.get("id"))
+        site_service_rows = []
+        for row in sorted(content.get("services", []), key=lambda item: item.get("order", 0)):
+            service = catalog_service_for(row)
+            if not row.get("visible", True) or service is None:
+                continue
+            site_service_rows.append(
+                {
+                    **row,
+                    "id": service.id,
+                    "catalog_service_id": service.id,
+                    "title": service.name,
+                    "description": service.description[:90],
+                    "fee_mode": "free" if service.fee_cents == 0 else "from",
+                    "fee_cents": service.fee_cents,
+                }
             )
-        else:
-            provider_query = provider_query.where(StaffUser.role.in_(clinical_roles))
+        public_site_content = dict(content)
+        public_site_content["services"] = site_service_rows
+        locations = (await db.scalars(select(Location).order_by(Location.name))).all()
+        # Clinical roles are not enough to make an account patient-facing.
+        # Administrators and support users can be assigned to a location while
+        # remaining excluded from booking and the public care team.
+        clinical_roles = set(await role_names_with_module(db, "clinical"))
+        provider_query = select(StaffUser).where(
+            StaffUser.active,
+            StaffUser.is_provider,
+            StaffUser.archived_at.is_(None),
+            (StaffUser.suspended_until.is_(None) | (StaffUser.suspended_until <= datetime.now(UTC))),
+            StaffUser.role.in_(clinical_roles),
+        )
         providers = (await db.scalars(provider_query)).all()
-        if not providers:
-            providers = (
-                await db.scalars(
-                    select(StaffUser).where(StaffUser.active, StaffUser.role.in_(bootstrap_roles))
-                )
-            ).all()
     content_locations = {
         item.get("location_id"): item for item in content.get("locations", [])
     }
@@ -588,7 +607,8 @@ async def storefront_data(
         "slug": organization.slug,
         "name": organization.name,
         "branding": settings.branding,
-        "content": public_content(content),
+        "logo_url": settings.logo_url,
+        "content": public_content(public_site_content),
         "cms_revision_id": preview_revision or (revision.id if revision else None),
         "cms_source": "preview" if preview_revision else "published" if revision else "provisioned-default",
         "booking_widget": settings.booking_widget,
@@ -596,15 +616,14 @@ async def storefront_data(
         "services": [
             {
                 "id": row["id"],
-                "code": row["id"],
+                "code": catalog_services[row["catalog_service_id"]].code,
                 "name": row["title"],
-                "fee_cents": row.get("fee_cents") or 0,
-                "fee_mode": row.get("fee_mode", "from"),
-                "description": row.get("description", ""),
+                "fee_cents": row["fee_cents"],
+                "fee_mode": row["fee_mode"],
+                "description": row["description"],
                 "icon": row.get("icon", "tooth"),
             }
-            for row in sorted(content.get("services", []), key=lambda item: item.get("order", 0))
-            if row.get("visible", True)
+            for row in site_service_rows
         ],
         "locations": [
             {
@@ -652,7 +671,14 @@ async def availability(
         settings = await tenant_settings(db)
         location = await db.get(Location, location_id)
         provider = await db.get(StaffUser, provider_id)
-        if location is None or provider is None or not provider.active:
+        if (
+            location is None
+            or provider is None
+            or not provider.active
+            or not provider.is_provider
+            or provider.archived_at is not None
+            or (provider.suspended_until and provider.suspended_until > datetime.now(UTC))
+        ):
             raise HTTPException(404, "Location or provider not found")
         zone = ZoneInfo(location.timezone)
         start = datetime.combine(day, time(location.opening_hour), tzinfo=zone)

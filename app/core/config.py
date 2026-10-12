@@ -24,8 +24,11 @@ class Settings(BaseSettings):
     provider_options: Annotated[dict, NoDecode] = {}
     database_aliases: Annotated[dict[str, SecretStr], NoDecode] = {}
     environment: str = "development"
+    staff_session_ttl_seconds: int = 28800
+    staff_idle_timeout_seconds: int = 3600
     platform_public_url: str = "http://192.168.1.68:5172"
     tenant_admin_public_url_template: str = "http://admin.{tenant_slug}.dhmis.local:5175"
+    tenant_public_url_template: str = "http://{tenant_slug}.dhmis.local:8080"
     cors_origins: list[str] = [
         "http://localhost:5172",
         "http://localhost:5173",

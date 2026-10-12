@@ -55,7 +55,7 @@ class PlatformInvite(Record, Base):
     __table_args__ = {"schema": "dhmis_control"}
     name: Mapped[str] = mapped_column(String(160))
     email: Mapped[str] = mapped_column(String(254))
-    role: Mapped[str] = mapped_column(String(30), default="platform_admin")
+    role: Mapped[str] = mapped_column(String(160), default="platform_admin")
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires: Mapped[int] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(30), default="pending")

@@ -26,6 +26,13 @@ class StaffUser(Record, Base):
     password_hash: Mapped[str] = mapped_column(String(300))
     role: Mapped[str] = mapped_column(String(30), default="admin")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Being assigned a clinical role does not by itself make someone a
+    # patient-facing provider.  Platform and tenant administrators can be
+    # linked to locations for operational access without appearing in booking,
+    # portal, or public care-team lists.
+    is_provider: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    suspended_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=1)
 
     mfa_secret: Mapped[str] = mapped_column(Text, default="")
@@ -61,6 +68,7 @@ class StaffInvite(Record, Base):
     email: Mapped[str] = mapped_column(String(254))
     name: Mapped[str] = mapped_column(String(160))
     role: Mapped[str] = mapped_column(String(30))
+    is_provider: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     location_ids: Mapped[list] = mapped_column(JSON, default=list)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires: Mapped[int] = mapped_column(BigInteger)

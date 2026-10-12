@@ -13,8 +13,8 @@ router = APIRouter(prefix="/notifications", tags=["Notification operations"])
 def _feed_item(row):
     status = row.status or "pending"
     severity = "danger" if status in {"failed", "retry"} else "warning" if status == "pending" else "info"
-    kind = row.kind.replace(".", " ").replace("_", " ").strip().capitalize()
     payload = row.payload if isinstance(row.payload, dict) else {}
+    kind = str(payload.get("title") or row.kind.replace(".", " ").replace("_", " ").strip().capitalize())
     detail = payload.get("subject") or payload.get("title") or (
         "Delivery failed and needs attention" if status in {"failed", "retry"}
         else "Delivery is queued" if status == "pending" else "Delivery completed"
@@ -39,6 +39,8 @@ def _feed_item(row):
         "created_at": row.created_at,
         "unread": status in {"pending", "retry", "failed"},
         "cta_label": str(cta_label),
+        "thread_id": payload.get("thread_id"),
+        "patient_id": payload.get("patient_id"),
     }
 
 
@@ -47,7 +49,7 @@ async def notification_feed(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=10, ge=10, le=50),
     db=Depends(db_session),
-    actor=Depends(permit("settings")),
+    actor=Depends(permit("messaging.notification_delivery.read")),
 ):
     total = await db.scalar(select(func.count()).select_from(OutboxMessage)) or 0
     unread_count = await db.scalar(
@@ -73,7 +75,7 @@ async def notification_feed(
 
 
 @router.get("")
-async def messages(db=Depends(db_session), actor=Depends(permit("settings"))):
+async def messages(db=Depends(db_session), actor=Depends(permit("messaging.notification_delivery.read"))):
     rows = (
         await db.scalars(select(OutboxMessage).order_by(OutboxMessage.created_at.desc()).limit(300))
     ).all()
@@ -82,12 +84,12 @@ async def messages(db=Depends(db_session), actor=Depends(permit("settings"))):
 
 
 @router.post("/dispatch")
-async def run(db=Depends(db_session), actor=Depends(permit("settings"))):
+async def run(db=Depends(db_session), actor=Depends(permit("messaging.notification_delivery.retry"))):
     return await dispatch(db, actor)
 
 
 @router.post("/{identifier}/retry")
-async def retry(identifier: str, db=Depends(db_session), actor=Depends(permit("settings"))):
+async def retry(identifier: str, db=Depends(db_session), actor=Depends(permit("messaging.notification_delivery.retry"))):
     row = await required(db, OutboxMessage, identifier, lock=True)
     if row.status in ("failed", "retry"):
         row.status = "pending"

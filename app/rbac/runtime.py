@@ -118,7 +118,9 @@ def _roles_from_records(role_rows, grant_rows, domain: Domain) -> dict[str, Role
             grants=grants_by_role.get(row.id, {}),
             description=row.description,
             parent_id=row.parent_id,
-            locked=row.locked,
+            # Only canonical Super Admin roles are protected. Older tenant
+            # rows may still carry the legacy blanket lock flag.
+            locked=row.id in {"tenant-super-admin", "platform-super-admin"},
             version=row.version,
         )
         for row in role_rows

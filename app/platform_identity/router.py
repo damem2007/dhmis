@@ -165,14 +165,37 @@ async def accept_platform_invite(body: AcceptPlatformInvite):
         user = PlatformUser(
             name=invitation.name,
             email=invitation.email,
-            role=invitation.role,
+            # The legacy field remains a compatibility marker. Canonical
+            # platform access is stored in PlatformRoleAssignment below.
+            role="platform_admin",
             password_hash=hash_password(body.password),
             created_by="platform-invitation",
             updated_by="platform-invitation",
         )
         db.add(user)
         await db.flush()
-        await seed_platform_super_admin(db, user.id)
+        role_identifier = invitation.role or "platform-super-admin"
+        if role_identifier == "platform_admin":
+            role_identifier = "platform-super-admin"
+        role = await db.scalar(
+            select(PlatformRole).where(
+                (PlatformRole.id == role_identifier)
+                | (PlatformRole.name.ilike(role_identifier))
+            )
+        )
+        if role is None or role.status != "published":
+            raise HTTPException(422, "The invited platform role is no longer available")
+        db.add(
+            PlatformRoleAssignment(
+                user_id=user.id,
+                role_id=role.id,
+                level="Platform",
+                created_by=user.id,
+                updated_by=user.id,
+            )
+        )
+        if role.id == "platform-super-admin":
+            await seed_platform_super_admin(db, user.id)
         invitation.status = "accepted"
         invitation.updated_by = user.id
         platform_audit(db, user.id, "platform-invite.accept", details={"invite_id": invitation.id})

@@ -1,4 +1,5 @@
 import time
+from datetime import UTC, datetime
 from dataclasses import dataclass, field
 
 import jwt
@@ -25,6 +26,14 @@ ROLE_PERMISSIONS = {
     for item in default_role_definitions()
 }
 ROLE_DEFINITIONS = {item["name"]: item for item in default_role_definitions()}
+
+
+def staff_user_available(user: StaffUser) -> bool:
+    return bool(
+        user.active
+        and user.archived_at is None
+        and (user.suspended_until is None or user.suspended_until <= datetime.now(UTC))
+    )
 
 
 def role_has(role: str, permission: str) -> bool:
@@ -153,7 +162,8 @@ class Actor:
     modules: frozenset[str] = frozenset()
 
 
-async def issue_token(db, user, organization, *, ttl_seconds: int = 1800):
+async def issue_token(db, user, organization, *, ttl_seconds: int | None = None):
+    ttl_seconds = ttl_seconds if ttl_seconds is not None else settings().staff_session_ttl_seconds
     now = int(time.time())
     session = StaffSession(user_id=user.id, expires=now + ttl_seconds, last_active=now)
     db.add(session)
@@ -203,14 +213,14 @@ async def current_actor(
                 select(StaffSession).where(StaffSession.id == data["sid"]).with_for_update()
             )
             now = int(time.time())
-            if user is None or not user.active or not user.mfa_enabled or user.token_version != data["ver"]:
+            if user is None or not staff_user_available(user) or not user.mfa_enabled or user.token_version != data["ver"]:
                 raise ValueError()
             if (
                 session is None
                 or session.user_id != user.id
                 or session.revoked
                 or session.expires <= now
-                or session.last_active < now - 900
+                or session.last_active < now - settings().staff_idle_timeout_seconds
             ):
                 raise ValueError()
             session.last_active = now

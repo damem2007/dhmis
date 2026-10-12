@@ -215,7 +215,13 @@ async def organization_breakdown(db, scope: AnalyticsScope, start: date, end: da
     providers = (
         await db.scalars(
             select(StaffUser)
-            .where(StaffUser.active, StaffUser.role.in_(await role_names_with_module(db, "clinical")))
+            .where(
+                StaffUser.active,
+                StaffUser.is_provider,
+                StaffUser.archived_at.is_(None),
+                (StaffUser.suspended_until.is_(None) | (StaffUser.suspended_until <= datetime.now(UTC))),
+                StaffUser.role.in_(await role_names_with_module(db, "clinical")),
+            )
             .order_by(StaffUser.name)
         )
     ).all()

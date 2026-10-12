@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from app.rbac.bootstrap import APPROVAL_POLICY_ID, default_approval_policy
-from app.rbac.management import clear_unmet_dependents
+from app.rbac.management import clear_unmet_dependents, is_protected_role
 from app.rbac.policy import (
     ApprovalDecision,
     ApprovalPolicy,
@@ -435,7 +435,7 @@ async def create_role_change_request(
 ):
     if len(reason.strip()) < 8:
         raise HTTPException(422, "Change reason must be at least 8 characters")
-    if role.locked:
+    if is_protected_role(role):
         raise HTTPException(409, "Super Admin roles cannot be edited")
     candidate = replace(
         context.roles[role.id],

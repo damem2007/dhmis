@@ -12,6 +12,18 @@ DEFAULT_POLICY = {
     "buffer_minutes": 0,
     "reminder_hours": 24,
 }
+DEFAULT_BRANDING = {
+    "--sage": "#0ea968",
+    "--sage-deep": "#076b41",
+    "--sage-tint": "#d3f3e4",
+    "--amber": "#e8a93b",
+    "--paper": "#f3f6f4",
+    "--surface": "#ffffff",
+    "--ink": "#0f1b17",
+    "--font-ui": "IBM Plex Sans, sans-serif",
+    "--font-display": "Fraunces, Georgia, serif",
+}
+DEFAULT_LOGO_URL = "/assets/dhmis-logo-v2/svg/dhmis-lockup-website.svg"
 COMMUNICATION_TEMPLATE_VARIABLES = (
     "clinic_name", "clinic_phone", "patient_first_name", "provider_name",
     "appointment_date", "appointment_time", "installment_amount", "due_date",
@@ -100,6 +112,8 @@ async def tenant_settings(db) -> TenantSettings:
     if row is None:
         row = TenantSettings(
             id=SETTINGS_ID,
+            branding=deepcopy(DEFAULT_BRANDING),
+            logo_url=DEFAULT_LOGO_URL,
             policy=deepcopy(DEFAULT_POLICY),
             communication_templates=deepcopy(DEFAULT_COMMUNICATION_TEMPLATES),
             migration_state={"legacy_control_backfilled": False},
@@ -107,14 +121,20 @@ async def tenant_settings(db) -> TenantSettings:
         db.add(row)
         await db.flush()
     else:
+        branding = {**DEFAULT_BRANDING, **(row.branding or {})}
+        changed = branding != (row.branding or {})
+        if not row.logo_url:
+            row.logo_url = DEFAULT_LOGO_URL
+            changed = True
         templates = deepcopy(row.communication_templates)
-        changed = False
         for key, value in DEFAULT_COMMUNICATION_TEMPLATES.items():
             if key not in templates or (
                 key == "staff-invitation" and templates[key].get("body") == LEGACY_STAFF_INVITATION_BODY
             ):
                 templates[key] = deepcopy(value)
                 changed = True
+        if branding != (row.branding or {}):
+            row.branding = branding
         if changed:
             row.communication_templates = templates
             await db.flush()
@@ -128,7 +148,7 @@ async def backfill_legacy_configuration(organization: Organization) -> TenantSet
         source = await db.get(Organization, organization.id)
         snapshot = {
             "visibility": source.visibility,
-            "branding": deepcopy(source.branding),
+            "branding": {**DEFAULT_BRANDING, **deepcopy(source.branding or {})},
             "policy": {**DEFAULT_POLICY, **deepcopy(source.policy)},
             "jurisdiction_policy": deepcopy(source.jurisdiction_policy),
             "public_content": deepcopy(source.public_content),
@@ -158,6 +178,7 @@ async def configure_tenant(
     *,
     visibility: str | None = None,
     branding: dict | None = None,
+    logo_url: str | None = None,
     policy: dict | None = None,
     jurisdiction_policy: dict | None = None,
     public_content: dict | None = None,
@@ -167,7 +188,8 @@ async def configure_tenant(
     row = await tenant_settings(db)
     values = {
         "visibility": visibility,
-        "branding": branding,
+        "branding": {**DEFAULT_BRANDING, **deepcopy(branding)} if branding is not None else None,
+        "logo_url": logo_url.strip() if isinstance(logo_url, str) and logo_url.strip() else DEFAULT_LOGO_URL if logo_url is not None else None,
         "policy": policy,
         "jurisdiction_policy": jurisdiction_policy,
         "public_content": public_content,

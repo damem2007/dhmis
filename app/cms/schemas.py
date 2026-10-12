@@ -22,6 +22,7 @@ class MediaInput(BaseModel):
 
 class ServiceInput(BaseModel):
     id: str = Field(min_length=1, max_length=100)
+    catalog_service_id: str | None = Field(default=None, max_length=36)
     title: str = Field(min_length=1, max_length=180)
     icon: str = Field(default="tooth", max_length=80)
     description: str = Field(default="", max_length=90)

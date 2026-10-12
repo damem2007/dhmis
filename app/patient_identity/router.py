@@ -19,6 +19,7 @@ from app.identity.service import db_session, permit
 from app.notifications.models import OutboxMessage
 from app.notifications.service import deliver_message_now
 from app.organizations.tenant_resolution import organization_from_login, resolve_organization
+from app.patient_identity.invitations import issue_patient_invite, patient_invitation_url
 from app.patient_identity.models import (
     PatientInvite,
     PatientSession,
@@ -78,29 +79,7 @@ async def create_invite(body: InviteInput, db=Depends(db_session), actor=Depends
     patient = await required(db, Patient, body.patient_id)
     if await db.scalar(select(PatientUser).where(PatientUser.patient_id == patient.id)):
         raise HTTPException(409, "Client Portal account already exists")
-    raw = secrets.token_urlsafe(32)
-    existing = (
-        await db.scalars(
-            select(PatientInvite).where(
-                PatientInvite.patient_id == patient.id, PatientInvite.used.is_(False)
-            )
-        )
-    ).all()
-    for invitation in existing:
-        invitation.used = True
-    record = await add(
-        db,
-        PatientInvite,
-        {
-            "patient_id": patient.id,
-            "email": body.email.lower(),
-            "token_hash": digest(raw),
-            "expires": int(time.time()) + 86400,
-        },
-        actor.user_id,
-    )
-    audit(db, actor.user_id, "portal.invite", "patients", patient.id)
-    return {"invite_id": record.id, "token": raw, "organization_id": actor.organization.id}
+    return await issue_patient_invite(db, patient, body.email, actor)
 
 
 @router.get("/invites/query")
@@ -190,14 +169,14 @@ async def resend_patient_invite(
             kind="patient.invitation",
             payload={
                 "destination": replacement.email,
-                "body": f"Use this one-time Client Portal invitation token within 24 hours: {raw}",
+                "body": f"Use this one-time Client Portal invitation link within 24 hours: {patient_invitation_url(raw, actor.organization.slug)}",
             },
             idempotency_key=f"patient-invitation:{replacement.id}",
             created_by=actor.user_id,
             updated_by=actor.user_id,
         ))
     audit(db, actor.user_id, "portal.invite.resend", "patients", invitation.patient_id)
-    return {"invite_id": replacement.id, "token": raw, "expires": replacement.expires}
+    return {"invite_id": replacement.id, "token": raw, "invitation_link": patient_invitation_url(raw, actor.organization.slug), "expires": replacement.expires}
 
 
 @router.post("/invites/{identifier}/revoke")
@@ -413,6 +392,7 @@ async def me(actor: PatientActor = Depends(current_patient), db=Depends(patient_
         "name": f"{patient.first_name} {patient.last_name}",
         "email": (await required(db, PatientUser, actor.user_id)).email,
         "branding": actor.settings.branding,
+        "logo_url": actor.settings.logo_url,
     }
 
 

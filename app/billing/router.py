@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from app.billing.models import Invoice, LedgerEntry, Service
+from app.billing.models import FeeVersion, Invoice, LedgerEntry, Service
+from app.billing.defaults import ensure_default_services
 from app.billing.service import payment
 from app.core.audit import audit
 from app.core.repository import add, required, serialize
@@ -32,6 +33,7 @@ class PaymentInput(BaseModel):
 
 @router.get("/services")
 async def services(db=Depends(db_session), actor=Depends(permit("billing"))):
+    await ensure_default_services(db)
     return [serialize(x) for x in (await db.scalars(select(Service).order_by(Service.name))).all()]
 
 
@@ -42,6 +44,31 @@ async def service(body: ServiceInput, db=Depends(db_session), actor=Depends(perm
     row = await add(db, Service, body.model_dump(), actor.user_id)
     audit(db, actor.user_id, "create", "services", row.id)
     return serialize(row)
+
+
+@router.put("/services/{identifier}")
+async def update_service(identifier: str, body: ServiceInput, db=Depends(db_session), actor=Depends(permit("billing"))):
+    row = await required(db, Service, identifier)
+    duplicate = await db.scalar(select(Service).where(Service.code == body.code, Service.id != identifier))
+    if duplicate:
+        raise HTTPException(409, "Service code already exists")
+    for key, value in body.model_dump().items():
+        setattr(row, key, value)
+    audit(db, actor.user_id, "update", "services", row.id)
+    return serialize(row)
+
+
+@router.delete("/services/{identifier}")
+async def delete_service(identifier: str, db=Depends(db_session), actor=Depends(permit("billing"))):
+    row = await required(db, Service, identifier)
+    if await db.scalar(select(FeeVersion.id).where(FeeVersion.service_id == identifier).limit(1)):
+        raise HTTPException(409, "This service has fee history and cannot be deleted")
+    invoices = (await db.scalars(select(Invoice))).all()
+    if any(any(line.get("service_id") == identifier for line in (invoice.lines or [])) for invoice in invoices):
+        raise HTTPException(409, "This service is used by an invoice and cannot be deleted")
+    await db.execute(delete(Service).where(Service.id == identifier))
+    audit(db, actor.user_id, "delete", "services", identifier)
+    return {"deleted": True, "id": identifier}
 
 
 @router.get("/invoices")
@@ -93,4 +120,7 @@ async def ledger(patient_id: str, db=Depends(db_session), actor=Depends(permit("
 
 @router.get("/catalog")
 async def catalog(db=Depends(db_session), actor=Depends(permit("dashboard"))):
+    # Keep existing tenant schemas aligned with the catalogue defaults even
+    # when they were provisioned before the default-services migration ran.
+    await ensure_default_services(db)
     return [serialize(x) for x in (await db.scalars(select(Service).order_by(Service.name))).all()]

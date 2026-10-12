@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select, text
 
+from app.billing.defaults import ensure_default_services
 from app.billing.models import Service
 from app.cms.models import CmsMediaAsset, CmsPublicationPointer, CmsRevision
 from app.cms.schemas import CmsContentInput
@@ -10,6 +11,15 @@ from app.identity.models import StaffUser
 from app.identity.service import role_names_with_module
 from app.organizations.configuration import tenant_settings
 from app.organizations.models import Location
+
+DEFAULT_SERVICE_ICONS = {
+    "CHECKUP-CLEAN": "checkup",
+    "FILLINGS": "filling",
+    "EMERGENCY": "emergency",
+    "WHITENING": "whitening",
+    "CHILDREN-DENTISTRY": "kids",
+    "CONSULTATION": "consult",
+}
 
 
 def revision_payload(row: CmsRevision) -> dict:
@@ -40,13 +50,23 @@ async def lock_publication_state(db):
 
 
 async def default_content(db, organization) -> dict:
+    # CMS defaults are derived from the same tenant-owned catalogue used by
+    # billing and clinical workflows. This also backfills older empty tenant
+    # schemas before their first site-editor visit.
+    await ensure_default_services(db)
     settings = await tenant_settings(db)
     services = (await db.scalars(select(Service).order_by(Service.name))).all()
     locations = (await db.scalars(select(Location).order_by(Location.name))).all()
     dentists = (
         await db.scalars(
             select(StaffUser)
-            .where(StaffUser.active, StaffUser.role.in_(await role_names_with_module(db, "clinical")))
+            .where(
+                StaffUser.active,
+                StaffUser.is_provider,
+                StaffUser.archived_at.is_(None),
+                (StaffUser.suspended_until.is_(None) | (StaffUser.suspended_until <= datetime.now(UTC))),
+                StaffUser.role.in_(await role_names_with_module(db, "clinical")),
+            )
             .order_by(StaffUser.name)
         )
     ).all()
@@ -61,9 +81,11 @@ async def default_content(db, organization) -> dict:
         services=[
             {
                 "id": item.id,
+                "catalog_service_id": item.id,
                 "title": item.name,
+                "icon": DEFAULT_SERVICE_ICONS.get(item.code, "tooth"),
                 "description": item.description[:90],
-                "fee_mode": "from",
+                "fee_mode": "free" if item.fee_cents == 0 else "from",
                 "fee_cents": item.fee_cents,
                 "visible": True,
                 "order": index,
@@ -187,9 +209,61 @@ def consent_valid(consent: dict) -> bool:
     )
 
 
+async def sync_catalog_services(db, content: dict) -> dict:
+    """Normalize site services from the tenant's billing catalogue.
+
+    Services & fees owns the service identity and billable fields. The CMS may
+    curate presentation (icon, visibility, and order), but it cannot create a
+    second service record with different pricing or descriptive data.
+    """
+    catalogue = {
+        item.id: item
+        for item in (await db.scalars(select(Service).order_by(Service.name))).all()
+    }
+    normalized = []
+    seen: set[str] = set()
+    for item in content.get("services", []):
+        service_id = item.get("catalog_service_id") or item.get("id")
+        service = catalogue.get(service_id)
+        if service is None:
+            raise HTTPException(
+                422,
+                "Every website service must be created in Services & fees before it can be published.",
+            )
+        if service.id in seen:
+            raise HTTPException(422, "A service can only appear once on the website.")
+        seen.add(service.id)
+        normalized.append(
+            {
+                **item,
+                "id": service.id,
+                "catalog_service_id": service.id,
+                "title": service.name,
+                "description": service.description[:90],
+                "fee_mode": "free" if service.fee_cents == 0 else "from",
+                "fee_cents": service.fee_cents,
+            }
+        )
+    result = dict(content)
+    result["services"] = normalized
+    return result
+
+
 async def preflight(db, revision: CmsRevision, organization) -> dict:
     blockers: list[dict] = []
     content = CmsContentInput.model_validate(revision.content)
+    catalogue = {
+        item.id
+        for item in (await db.scalars(select(Service))).all()
+    }
+    seen_services: set[str] = set()
+    for item in content.services:
+        service_id = item.catalog_service_id or item.id
+        if service_id not in catalogue:
+            blockers.append({"code": "service.catalog.unknown", "service_id": service_id})
+        elif service_id in seen_services:
+            blockers.append({"code": "service.catalog.duplicate", "service_id": service_id})
+        seen_services.add(service_id)
     locations = (await db.scalars(select(Location))).all()
     valid_location_ids = {item.id for item in locations}
     applicability = revision.applicability
@@ -219,7 +293,19 @@ async def preflight(db, revision: CmsRevision, organization) -> dict:
             blockers.append({"code": "media.alt.required", "asset_key": asset.key})
         if not consent_valid(asset.consent.model_dump()):
             blockers.append({"code": "media.consent.required", "asset_key": asset.key})
-    providers = {item.id for item in (await db.scalars(select(StaffUser).where(StaffUser.active))).all()}
+    providers = {
+        item.id
+        for item in (
+            await db.scalars(
+                select(StaffUser).where(
+                    StaffUser.active,
+                    StaffUser.is_provider,
+                    StaffUser.archived_at.is_(None),
+                    (StaffUser.suspended_until.is_(None) | (StaffUser.suspended_until <= datetime.now(UTC))),
+                )
+            )
+        ).all()
+    }
     for dentist in content.dentists:
         if dentist.photo_key and dentist.photo_key not in assets:
             blockers.append({"code": "dentist.photo.unknown", "dentist_id": dentist.id})

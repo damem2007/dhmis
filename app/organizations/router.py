@@ -21,7 +21,11 @@ async def reference(db=Depends(db_session), actor=Depends(current_actor)):
     providers = (
         await db.scalars(
             select(StaffUser).where(
-                StaffUser.active, StaffUser.role.in_(await role_names_with_module(db, "clinical"))
+                StaffUser.active,
+                StaffUser.is_provider,
+                StaffUser.archived_at.is_(None),
+                StaffUser.role.in_(await role_names_with_module(db, "clinical")),
+                (StaffUser.suspended_until.is_(None) | (StaffUser.suspended_until <= datetime.now(timezone.utc))),
             )
         )
     ).all()

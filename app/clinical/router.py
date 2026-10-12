@@ -274,7 +274,14 @@ async def encounter_complete(identifier: str, db=Depends(db_session), actor=Depe
 @router.post("/treatment-plans", status_code=201)
 async def plan(body: TreatmentInput, db=Depends(db_session), actor=Depends(permit("clinical"))):
     patient = await required(db, Patient, body.patient_id)
-    await required(db, StaffUser, body.provider_id)
+    provider = await required(db, StaffUser, body.provider_id)
+    if (
+        not provider.active
+        or not provider.is_provider
+        or provider.archived_at is not None
+        or (provider.suspended_until and provider.suspended_until > datetime.now(UTC))
+    ):
+        raise HTTPException(422, "Treatment provider is not an active patient-facing provider")
     options = await estimate_options(db, body, patient)
     row = await add(
         db,

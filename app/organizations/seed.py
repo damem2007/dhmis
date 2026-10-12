@@ -132,26 +132,21 @@ async def seed(org):
                     procedure=["Hygiene and exam", "Treatment consultation", "Restoration review"][index],
                 ),
             )
-        services = []
-        for code, name, fee in [
-            ("DEMO-EXAM", "Comprehensive exam", 12000),
-            ("DEMO-HYG", "Hygiene visit", 18000),
-            ("DEMO-REST", "Restoration consultation", 9500),
-        ]:
-            services.append(
-                await add(
-                    db,
-                    Service,
-                    {
-                        "code": code,
-                        "name": name,
-                        "fee_cents": fee,
-                        "description": "Illustrative demo fee — not a clinical coding reference",
-                    },
-                    user.id,
-                )
+        service = await db.scalar(select(Service).where(Service.code == "CHECKUP-CLEAN"))
+        if service is None:
+            # Keep the development seed usable for a schema created before the
+            # default-service migration is applied.
+            service = await add(
+                db,
+                Service,
+                {
+                    "code": "CHECKUP-CLEAN",
+                    "name": "Check-up & clean",
+                    "fee_cents": 13500,
+                    "description": "Exam, scale and polish, with X-rays as needed.",
+                },
+                user.id,
             )
-        service = services[0]
         invoice = await add(
             db,
             Invoice,

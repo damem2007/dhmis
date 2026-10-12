@@ -21,7 +21,10 @@ from app.rbac.policy import (
     requires_approval,
     validate_grants,
 )
+from app.rbac.models import TenantRoleAssignment
+from app.platform_identity.models import PlatformUser
 from app.rbac.runtime import conditions_from_record
+from app.rbac.registry import load_approved_registry
 
 
 def condition_values(values: dict[str, Any]) -> dict[str, Any]:
@@ -45,6 +48,14 @@ def grant_values(item) -> dict[str, Any]:
     }
 
 
+PROTECTED_ROLE_IDS = {"tenant-super-admin", "platform-super-admin"}
+
+
+def is_protected_role(role) -> bool:
+    """Return whether a canonical Super Admin role is immutable."""
+    return role.id in PROTECTED_ROLE_IDS
+
+
 async def assert_unique_name(db, role_model, name: str, exclude_id: str | None = None):
     query = select(role_model.id).where(
         func.lower(role_model.name) == name.strip().lower(),
@@ -64,11 +75,35 @@ async def role_payload(db, role, grant_model, assignment_model):
             .order_by(grant_model.permission_key)
         )
     ).all()
-    users = await db.scalar(
-        select(func.count(func.distinct(assignment_model.user_id))).where(
-            assignment_model.role_id == role.id
-        )
+    user_count_query = select(func.count(func.distinct(assignment_model.user_id))).where(
+        assignment_model.role_id == role.id
     )
+    # Tenant Super Admin supersedes legacy/default role assignments. Older
+    # tenants may still contain both rows after the RBAC migration, but the
+    # protected role must remain the sole role count for that user.
+    if getattr(role, "domain", None) == "tenant" and role.id != "tenant-super-admin":
+        super_admin_users = select(TenantRoleAssignment.user_id).where(
+            TenantRoleAssignment.role_id == "tenant-super-admin"
+        )
+        user_count_query = user_count_query.where(
+            ~assignment_model.user_id.in_(super_admin_users)
+        )
+    elif getattr(role, "domain", None) == "platform":
+        # Assignments can outlive a platform identity after an account is
+        # removed. Only current platform users should be represented in the
+        # role card count.
+        user_count_query = user_count_query.where(
+            assignment_model.user_id.in_(select(PlatformUser.id))
+        )
+    users = await db.scalar(user_count_query)
+    permission_count = len(grants)
+    if is_protected_role(role):
+        permission_count = sum(
+            permission.domain.value == role.domain
+            and permission.reviewed
+            and not permission.retired
+            for permission in load_approved_registry().permissions.values()
+        )
     return {
         "id": role.id,
         "domain": role.domain,
@@ -76,10 +111,10 @@ async def role_payload(db, role, grant_model, assignment_model):
         "description": role.description,
         "status": role.status,
         "parent_id": role.parent_id,
-        "locked": role.locked,
+        "locked": is_protected_role(role),
         "version": role.version,
         "user_count": users or 0,
-        "permission_count": len(grants),
+        "permission_count": permission_count,
         "grants": [
             {
                 "permission_key": grant.permission_key,
@@ -105,7 +140,7 @@ async def require_role(db, role_model, identifier: str, *, lock: bool = False):
 
 
 def ensure_mutable(role, *, draft_only: bool = False):
-    if role.locked:
+    if is_protected_role(role):
         raise HTTPException(409, "Super Admin roles cannot be edited")
     if draft_only and role.status != RoleStatus.DRAFT.value:
         raise HTTPException(409, "Published role changes require a governed change request")
@@ -251,7 +286,7 @@ def role_requires_approval(role, context) -> tuple[bool, list[str]]:
         requires_approval(
             permissions,
             conflicts=len(conflicts),
-            touches_locked_role=role.locked,
+        touches_locked_role=is_protected_role(role),
             high_risk_assignment=False,
             policy=ApprovalPolicy(),
             rules=context.rules,

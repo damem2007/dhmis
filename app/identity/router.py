@@ -22,7 +22,7 @@ from app.identity.models import (
 from app.identity.passwords import hash_password, verify_password
 from app.identity.recovery import revoke_staff_sessions
 from app.identity.security import digest, vault, verify_totp
-from app.identity.service import Actor, current_actor, db_session, issue_token
+from app.identity.service import Actor, current_actor, db_session, issue_token, staff_user_available
 from app.organizations.tenant_resolution import organization_from_login
 
 router = APIRouter(prefix="/auth", tags=["Staff identity"])
@@ -102,7 +102,7 @@ async def challenge_user(db, body):
     if challenge is None or challenge.used or challenge.expires < int(time.time()) or challenge.attempts >= 5:
         raise HTTPException(401, "MFA challenge expired; sign in again")
     user = await db.scalar(select(StaffUser).where(StaffUser.id == challenge.user_id).with_for_update())
-    if user is None or not user.active:
+    if user is None or not staff_user_available(user):
         raise HTTPException(401, "Invalid credentials")
     return challenge, user
 
@@ -120,7 +120,7 @@ async def login(body: Login, request: Request):
             select(StaffUser).where(StaffUser.email == body.email.strip().lower()).with_for_update()
         )
         valid = verify_password(body.password, user.password_hash if user else DUMMY_HASH) and bool(
-            user and user.active
+            user and staff_user_available(user)
         )
         audit(
             db,
@@ -195,7 +195,7 @@ async def verify(body: CodeInput):
         challenge.used = True
         access = await issue_token(db, user, org)
         audit(db, user.id, "auth.success", "staff", user.id)
-    return {"access_token": access, "token_type": "bearer", "expires_in": 1800}
+    return {"access_token": access, "token_type": "bearer", "expires_in": settings().staff_session_ttl_seconds}
 
 
 @router.post("/logout")
@@ -223,6 +223,7 @@ async def me(actor: Actor = Depends(current_actor)):
         "mfa_enabled": True,
         "permissions": sorted(ROLE_PERMISSIONS.get(actor.role, set())),
         "branding": actor.settings.branding,
+        "logo_url": actor.settings.logo_url,
         "photo_url": actor.photo_url,
         "local_password": actor.local_password,
     }
@@ -279,7 +280,7 @@ async def complete_password_reset(body: PasswordResetComplete):
         ):
             raise HTTPException(401, "Password reset token is invalid or expired")
         user = await db.get(StaffUser, challenge.user_id)
-        if user is None or not user.active or user.external_subject is not None:
+        if user is None or not staff_user_available(user) or user.external_subject is not None:
             raise HTTPException(401, "Password reset token is invalid or expired")
         user.password_hash = hash_password(body.new_password)
         user.token_version += 1

@@ -19,6 +19,7 @@ from app.rbac.management import (
     assignment_is_high_risk,
     direct_grants,
     ensure_mutable,
+    is_protected_role,
     replace_role_grants,
     require_role,
     role_payload,
@@ -811,7 +812,7 @@ async def _assign_role(
         if domain is Domain.PLATFORM
         else await tenant_policy_context(db)
     )
-    if role.locked or assignment_is_high_risk(context.roles[role.id], context):
+    if is_protected_role(role) or assignment_is_high_risk(context.roles[role.id], context):
         raise HTTPException(409, "High-risk role assignment requires maker-checker approval")
     row = assignment_model(
         user_id=body.user_id,
@@ -839,7 +840,7 @@ async def _unassign_role(db, identifier: str, assignment_model, role_model):
     if assignment is None:
         raise HTTPException(404, "Role assignment not found")
     role = await require_role(db, role_model, assignment.role_id, lock=True)
-    if role.locked:
+    if is_protected_role(role):
         holders = await db.scalar(
             select(func.count(func.distinct(assignment_model.user_id))).where(
                 assignment_model.role_id == role.id

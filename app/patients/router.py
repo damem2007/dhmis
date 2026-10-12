@@ -19,6 +19,7 @@ from app.rbac.workflow import (
     request_payload,
 )
 from app.organizations.models import Location
+from app.patient_identity.invitations import issue_patient_invite
 from app.patients.models import GuardianLink, Patient
 from app.patients.schemas import PatientCreate
 
@@ -43,8 +44,13 @@ async def patients(
 async def create(body: PatientCreate, db=Depends(db_session), actor=Depends(permit("patients"))):
     await required(db, Location, body.location_id)
     row = await add(db, Patient, body.model_dump(), actor.user_id)
+    invitation = await issue_patient_invite(db, row, body.email, actor) if body.email else None
     audit(db, actor.user_id, "create", "patients", row.id)
-    return serialize(row)
+    result = serialize(row)
+    if invitation:
+        result['invitation_link'] = invitation['invitation_link']
+        result['invitation_expires_in'] = invitation['expires_in']
+    return result
 
 
 @router.put("/{identifier}")

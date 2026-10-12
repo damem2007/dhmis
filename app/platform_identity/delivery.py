@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
@@ -37,6 +38,7 @@ async def enqueue_platform_email(
     raw_token: str,
     reference_id: str,
     actor_id: str,
+    template_values: dict[str, str] | None = None,
 ) -> PlatformOutboxMessage:
     template_key = "staff-invitation" if kind == "platform.invitation" else "password-reset"
     token_key = "invitation_link" if kind == "platform.invitation" else "reset_link"
@@ -45,14 +47,19 @@ async def enqueue_platform_email(
     template = configuration.communication_templates.get(template_key, {})
     if not template.get("active") or template.get("channel") != "email":
         raise IntegrationFailure(f"Platform {template_key} email template is not active")
+    values = {
+        "clinic_name": "DHMIS Platform",
+        "platform_name": "DHMIS Platform",
+        "recipient_name": recipient_name,
+        **(template_values or {}),
+    }
     subject, body = render_communication_template(
         template,
-        {
-            "clinic_name": "DHMIS Platform",
-            "recipient_name": recipient_name,
-            token_key: platform_action_url(action, raw_token),
-        },
+        {**values, token_key: platform_action_url(action, raw_token)},
     )
+    # A customized template must never leak a literal token to an end user.
+    subject = re.sub(r"\{\{[a-z_]+\}\}", "", subject)
+    body = re.sub(r"\{\{[a-z_]+\}\}", "", body)
     payload = {
         "channel": "email",
         "destination": destination,

@@ -65,6 +65,9 @@ class TenantSettings(Record, Base):
     __table_args__ = {"schema": "tenant"}
     visibility: Mapped[str] = mapped_column(String(20), default="organization")
     branding: Mapped[dict] = mapped_column(JSON, default=dict)
+    logo_url: Mapped[str] = mapped_column(
+        String(1000), default="/assets/dhmis-logo-v2/svg/dhmis-lockup-website.svg", nullable=False
+    )
     policy: Mapped[dict] = mapped_column(
         JSON,
         default=lambda: {

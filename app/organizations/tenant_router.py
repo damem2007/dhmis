@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
@@ -43,6 +45,9 @@ async def booking_widget_config(slug: str):
             await db.scalars(
                 select(StaffUser).where(
                     StaffUser.active,
+                    StaffUser.is_provider,
+                    StaffUser.archived_at.is_(None),
+                    (StaffUser.suspended_until.is_(None) | (StaffUser.suspended_until <= datetime.now(UTC))),
                     StaffUser.role.in_(await role_names_with_module(db, "clinical")),
                 )
             )
@@ -58,6 +63,7 @@ async def booking_widget_config(slug: str):
     return {
         "tenant": {"slug": organization.slug, "name": organization.name},
         "branding": {**runtime.branding, "--sage": config.get("accent_color", "#356b5d")},
+        "logo_url": runtime.logo_url,
         "allowed_origins": config.get("allowed_origins", []),
         "default_location_id": config.get("default_location_id", ""),
         "locations": [

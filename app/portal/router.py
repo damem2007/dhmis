@@ -17,6 +17,7 @@ from app.identity.security import digest, vault
 from app.integrations.contracts import SignatureRequest
 from app.integrations.registry import resolve
 from app.messaging.models import Message, MessageThread
+from app.notifications.models import OutboxMessage
 from app.organizations.models import Location
 from app.patient_identity.service import (
     PatientActor,
@@ -43,7 +44,11 @@ async def portal_context(
     providers = (
         await db.scalars(
             select(StaffUser).where(
-                StaffUser.active, StaffUser.role.in_(await role_names_with_module(db, "clinical"))
+                StaffUser.active,
+                StaffUser.is_provider,
+                StaffUser.archived_at.is_(None),
+                StaffUser.role.in_(await role_names_with_module(db, "clinical")),
+                (StaffUser.suspended_until.is_(None) | (StaffUser.suspended_until <= datetime.now(timezone.utc))),
             )
         )
     ).all()
@@ -168,6 +173,92 @@ async def recent_activity(
         "total": sum(count or 0 for count in counts),
         "items": items[offset : offset + page_size],
     }
+
+
+@router.get("/notifications")
+async def notifications(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
+    """Return the patient's catch-all notification feed.
+
+    Read state is intentionally kept by the portal client so the compact bell can
+    acknowledge an item without deleting it from the full notification center.
+    """
+    identifiers = await authorized_patient_ids(db, actor)
+    now = datetime.now(timezone.utc)
+    items = []
+
+    appointments = (
+        await db.scalars(
+            select(Appointment)
+            .where(Appointment.patient_id.in_(identifiers))
+            .order_by(Appointment.starts_at.desc(), Appointment.id.desc())
+        )
+    ).all()
+    for row in appointments:
+        status = (row.status or "").lower()
+        if status in {"missed", "no-show", "no_show"}:
+            title = "Missed appointment"
+            detail = f"{row.procedure} · {row.starts_at.astimezone().strftime('%b %-d, %Y at %-I:%M %p')}"
+            occurred_at = row.updated_at
+            kind = "appointment-missed"
+        elif status == "confirmed" and row.starts_at >= now:
+            title = "Appointment reminder"
+            detail = f"{row.procedure} · {row.starts_at.astimezone().strftime('%b %-d, %Y at %-I:%M %p')}"
+            occurred_at = row.starts_at
+            kind = "appointment-reminder"
+        else:
+            continue
+        items.append({"id": f"appointment:{row.id}:{kind}", "kind": kind, "title": title, "detail": detail, "occurred_at": occurred_at, "target": "book"})
+
+    invoices = (
+        await db.scalars(
+            select(Invoice)
+            .where(Invoice.patient_id.in_(identifiers))
+            .order_by(Invoice.updated_at.desc(), Invoice.id.desc())
+        )
+    ).all()
+    for row in invoices:
+        balance = max(0, row.total_cents + row.adjustment_cents - row.paid_cents)
+        if balance:
+            items.append({"id": f"invoice:{row.id}:{row.updated_at.isoformat()}:due", "kind": "billing-due", "title": "Due bill", "detail": f"{balance / 100:.2f} due", "occurred_at": row.updated_at, "target": "billing"})
+
+    submissions = (
+        await db.scalars(
+            select(FormSubmission)
+            .where(FormSubmission.patient_id.in_(identifiers))
+            .order_by(FormSubmission.updated_at.desc(), FormSubmission.id.desc())
+        )
+    ).all()
+    submission_keys = {(row.patient_id, row.template_id) for row in submissions}
+    for row in submissions:
+        items.append({"id": f"form:{row.id}:{row.updated_at.isoformat()}:submitted", "kind": "form", "title": "Form submitted", "detail": f"Template version {row.template_version}", "occurred_at": row.updated_at, "target": "forms"})
+    templates = (await db.scalars(select(FormTemplate).where(FormTemplate.active))).all()
+    for profile_id in identifiers:
+        for template in templates:
+            if (profile_id, template.id) not in submission_keys:
+                items.append({"id": f"form:{profile_id}:{template.id}:required", "kind": "form", "title": "Form to complete", "detail": f"{template.title} · v{template.version}", "occurred_at": template.updated_at, "target": "forms"})
+    consents = (
+        await db.scalars(
+            select(Consent)
+            .where(Consent.patient_id.in_(identifiers), Consent.status.in_(["requested", "awaiting_signature"]))
+            .order_by(Consent.updated_at.desc(), Consent.id.desc())
+        )
+    ).all()
+    for row in consents:
+        items.append({"id": f"consent:{row.id}:{row.updated_at.isoformat()}", "kind": "form", "title": "Consent to review", "detail": f"{row.title} · v{row.template_version}", "occurred_at": row.updated_at, "target": "forms"})
+
+    threads = (
+        await db.scalars(
+            select(MessageThread)
+            .where(MessageThread.patient_id.in_(identifiers))
+            .order_by(MessageThread.updated_at.desc(), MessageThread.id.desc())
+        )
+    ).all()
+    for row in threads:
+        items.append({"id": f"message:{row.id}:{row.updated_at.isoformat()}", "kind": "message", "title": "Secure message", "detail": f"{row.subject} · {row.status}", "occurred_at": row.updated_at, "target": "messages"})
+
+    items.sort(key=lambda item: (item["occurred_at"], item["id"]), reverse=True)
+    audit(db, actor.user_id, "portal.read", "notifications", patient_id=actor.patient_id)
+    return {"items": items}
 
 
 @router.get("/profiles")
@@ -450,6 +541,25 @@ async def create_thread(
         },
         actor.user_id,
     )
+    await add(
+        db,
+        OutboxMessage,
+        {
+            "kind": "patient.message",
+            "payload": {
+                "channel": "in_app",
+                "thread_id": thread.id,
+                "patient_id": patient.id,
+                "location_id": patient.location_id,
+                "title": "New patient message",
+                "subject": f"{patient.first_name} {patient.last_name}: {body.subject}",
+                "cta_label": "Open message",
+            },
+            "status": "pending",
+            "idempotency_key": f"patient-message:{thread.id}",
+        },
+        actor.user_id,
+    )
     audit(db, actor.user_id, "portal.message", "message_threads", thread.id, patient_id=patient.id)
     return serialize(thread)
 
@@ -489,6 +599,25 @@ async def reply(
             "sender_type": "patient",
             "sender_id": actor.user_id,
             "body_cipher": vault().seal(body.body),
+        },
+        actor.user_id,
+    )
+    await add(
+        db,
+        OutboxMessage,
+        {
+            "kind": "patient.message.reply",
+            "payload": {
+                "channel": "in_app",
+                "thread_id": thread.id,
+                "patient_id": thread.patient_id,
+                "location_id": thread.location_id,
+                "title": "Patient replied to a message",
+                "subject": thread.subject,
+                "cta_label": "Open message",
+            },
+            "status": "pending",
+            "idempotency_key": f"patient-message:{row.id}",
         },
         actor.user_id,
     )

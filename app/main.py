@@ -31,8 +31,8 @@ from app.platform_identity.router import router as platform_identity
 from app.portal.router import router as portal
 from app.prescriptions.router import router as prescriptions
 from app.rbac.router import router as rbac
-from app.reporting.router import router as reporting
 from app.regions.router import router as regions
+from app.reporting.router import router as reporting
 from app.scheduling.router import router as scheduling
 from app.surgery.router import router as surgery
 

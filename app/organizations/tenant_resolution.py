@@ -164,4 +164,5 @@ async def safe_metadata(resolution: TenantResolution):
             "patient_portal": organization.patient_portal_enabled,
         },
         "branding": settings.branding,
+        "logo_url": settings.logo_url,
     }

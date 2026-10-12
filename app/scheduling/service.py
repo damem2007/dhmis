@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
@@ -24,6 +24,9 @@ async def book(db, actor, body, existing_id=None):
     if (
         body.chair not in location.chairs
         or not provider.active
+        or not provider.is_provider
+        or provider.archived_at is not None
+        or (provider.suspended_until and provider.suspended_until > datetime.now(UTC))
         or not await user_has_module(db, provider, "clinical")
     ):
         raise HTTPException(422, "Invalid chair or provider")

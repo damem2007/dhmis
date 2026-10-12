@@ -80,7 +80,10 @@ async def performance(
     appointments = (await db.scalars(appointment_query)).all()
     encounters = (await db.scalars(encounter_query)).all()
     locations = {row.id: row for row in (await db.scalars(select(Location))).all()}
-    providers = {row.id: row for row in (await db.scalars(select(StaffUser))).all()}
+    providers = {
+        row.id: row
+        for row in (await db.scalars(select(StaffUser).where(StaffUser.is_provider))).all()
+    }
 
     breakdown = defaultdict(
         lambda: {

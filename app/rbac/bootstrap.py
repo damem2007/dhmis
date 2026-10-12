@@ -1,7 +1,7 @@
 from sqlalchemy import select
 
 from app.identity.models import StaffLocationAssignment
-from app.identity.service import organization_role_names
+from app.identity.service import default_role_name
 from app.platform_identity.models import PlatformUser
 from app.rbac.models import (
     PlatformApprovalPolicy,
@@ -135,7 +135,27 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
         and permission.key not in existing_grants
     )
     await db.flush()
-    users = (await db.scalars(select(PlatformUser).where(PlatformUser.active))).all()
+    # Bootstrap and MFA reconciliation pass the affected user id as
+    # ``actor_id``. Do not grant the locked role to every active operator when
+    # one account is being reconciled; that made newly invited operators show
+    # up as Platform Super Admins as well.
+    users = []
+    if actor_id and actor_id != "rbac-bootstrap":
+        user = await db.get(PlatformUser, actor_id)
+        if user is not None and user.active:
+            users = [user]
+    else:
+        # Schema/bootstrap reconciliation should only recover the account
+        # created by the platform bootstrap flow. Invited operators must keep
+        # the role selected on their invitation.
+        users = (
+            await db.scalars(
+                select(PlatformUser).where(
+                    PlatformUser.active,
+                    PlatformUser.created_by == "bootstrap",
+                )
+            )
+        ).all()
     assigned = set(
         await db.scalars(
             select(PlatformRoleAssignment.user_id).where(
@@ -187,8 +207,9 @@ async def seed_tenant_super_admin(
             select(StaffLocationAssignment).where(
                 StaffLocationAssignment.active,
                 StaffLocationAssignment.scope == "organization",
-                StaffLocationAssignment.role.in_(organization_role_names()),
+                StaffLocationAssignment.role == default_role_name(),
             )
+            .order_by(StaffLocationAssignment.created_at, StaffLocationAssignment.id)
         )
     ).all()
     assigned = set(
@@ -199,17 +220,17 @@ async def seed_tenant_super_admin(
             )
         )
     )
-    db.add_all(
-        TenantRoleAssignment(
-            user_id=assignment.user_id,
-            role_id=role.id,
-            level="Organization",
-            created_by=actor_id,
-            updated_by=actor_id,
+    if not assigned and legacy_admins:
+        assignment = legacy_admins[0]
+        db.add(
+            TenantRoleAssignment(
+                user_id=assignment.user_id,
+                role_id=role.id,
+                level="Organization",
+                created_by=actor_id,
+                updated_by=actor_id,
+            )
         )
-        for assignment in legacy_admins
-        if assignment.user_id not in assigned
-    )
     await db.flush()
     # Canonical role assignments are authoritative. Legacy assignment rows are
     # bridged only by an explicit caller (for example, invite acceptance for a

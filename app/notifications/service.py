@@ -59,6 +59,10 @@ async def dispatch(db, actor, now=None):
     ).all()
     delivered = failed = suppressed = 0
     for message in messages:
+        # In-app notifications are consumed by the notification feed and must
+        # not be treated as outbound appointment/email work.
+        if isinstance(message.payload, dict) and message.payload.get("channel") == "in_app":
+            continue
         if message.kind in {
             "patient.verification",
             "staff.invitation",

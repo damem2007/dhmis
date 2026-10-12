@@ -37,9 +37,11 @@ async def migrate_schema(schema, database_alias="primary"):
             await seed_platform_super_admin(db)
             await ensure_region_registry(db)
     else:
+        from app.billing.defaults import ensure_default_services
         from app.rbac.bootstrap import seed_tenant_super_admin
 
         async with tenant_session(schema, database_alias) as db:
+            await ensure_default_services(db)
             await seed_tenant_super_admin(db)
 
 
