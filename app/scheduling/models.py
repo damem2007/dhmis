@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the appointment model, contract, or value object.
 class Appointment(Record, Base):
     __tablename__ = "appointments"
     __table_args__ = (

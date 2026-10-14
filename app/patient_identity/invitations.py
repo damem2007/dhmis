@@ -14,11 +14,13 @@ from app.notifications.service import deliver_message_now
 from app.patient_identity.models import PatientInvite, PatientUser
 
 
+# Handle patient invitation url for this module.
 def patient_invitation_url(raw_token: str, tenant_slug: str) -> str:
     base = settings().tenant_public_url_template.format(tenant_slug=tenant_slug).rstrip('/')
     return f"{base}/{tenant_slug}/portal?invite={quote(raw_token, safe='')}"
 
 
+# Create or issue issue patient invite while applying existing validation and authorization.
 async def issue_patient_invite(db, patient, email: str, actor):
     normalized_email = email.strip().lower()
     if not normalized_email:

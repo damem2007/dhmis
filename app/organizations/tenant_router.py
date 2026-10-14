@@ -14,6 +14,7 @@ from app.organizations.tenant_resolution import resolve_organization, safe_metad
 router = APIRouter(prefix="/tenants", tags=["Tenant resolution"])
 
 
+# Retrieve resolve tenant for the current request or workflow.
 @router.get("/resolve")
 async def resolve_tenant(
     slug: str | None = Query(default=None),
@@ -40,7 +41,7 @@ async def booking_widget_config(slug: str):
     async with organization_session(organization) as db:
         runtime = await tenant_settings(db)
         config = runtime.booking_widget
-        locations = (await db.scalars(select(Location).order_by(Location.name))).all()
+        locations = (await db.scalars(select(Location).where(Location.active).order_by(Location.name))).all()
         providers = (
             await db.scalars(
                 select(StaffUser).where(

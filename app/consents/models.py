@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the consent model, contract, or value object.
 class Consent(Record, Base):
     __tablename__ = "consents"
     __table_args__ = {"schema": "tenant"}

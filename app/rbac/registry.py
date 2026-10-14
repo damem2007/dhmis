@@ -26,6 +26,7 @@ APPROVED_REGISTRY_PATH = (
 PERMISSION_KEY = re.compile(r"^[a-z0-9_]+(?:\.[a-z0-9_]+){2,}$")
 
 
+# Defines the approved registry model, contract, or value object.
 @dataclass(frozen=True)
 class ApprovedRegistry:
     version: str
@@ -34,6 +35,7 @@ class ApprovedRegistry:
     raw: dict
 
 
+# Retrieve load approved registry for the current request or workflow.
 def load_approved_registry(path: Path = APPROVED_REGISTRY_PATH) -> ApprovedRegistry:
     source = path.read_bytes()
     raw = json.loads(source)
@@ -86,6 +88,7 @@ def load_approved_registry(path: Path = APPROVED_REGISTRY_PATH) -> ApprovedRegis
     )
 
 
+# Handle synchronize permission registry for this module.
 async def synchronize_permission_registry(db, actor_id: str = "registry-sync") -> dict:
     approved = load_approved_registry()
     existing = {

@@ -22,9 +22,10 @@ async def entitlements(actor=Depends(current_actor)):
     return {"organization_id": actor.organization.id, "entitlements": await resolve_entitlements(actor.organization.id)}
 
 
+# Handle reference for this module.
 @router.get("/reference")
 async def reference(db=Depends(db_session), actor=Depends(current_actor)):
-    locations = (await db.scalars(select(Location))).all()
+    locations = (await db.scalars(select(Location).where(Location.active).order_by(Location.name))).all()
     providers = (
         await db.scalars(
             select(StaffUser).where(
@@ -44,6 +45,7 @@ async def reference(db=Depends(db_session), actor=Depends(current_actor)):
     }
 
 
+# Handle audit query for this module.
 def audit_query(
     patient_id: str | None,
     actor_id: str | None,
@@ -82,6 +84,7 @@ def audit_query(
     return query
 
 
+# Handle events for this module.
 @router.get("/audit")
 async def events(
     patient_id: str | None = Query(default=None),
@@ -94,6 +97,7 @@ async def events(
     return [serialize(x) for x in rows]
 
 
+# Retrieve query events for the current request or workflow.
 @router.get("/audit/query")
 async def query_events(
     patient_id: str | None = Query(default=None),
@@ -134,6 +138,7 @@ async def query_events(
     }
 
 
+# Handle export events for this module.
 @router.get("/audit/export")
 async def export_events(
     patient_id: str | None = Query(default=None),

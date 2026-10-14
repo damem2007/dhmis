@@ -8,6 +8,7 @@ from app.identity.models import StaffUser
 from app.identity.service import issue_token
 
 
+# Exercise or prepare booking for this test module.
 def booking(tenant, start):
     return {
         "patient_id": tenant["patient"].id,
@@ -20,6 +21,7 @@ def booking(tenant, start):
     }
 
 
+# Exercise or prepare test phase3 care surgery reporting and operations for this test module.
 async def test_phase3_care_surgery_reporting_and_operations(client, tenants):
     tenant = tenants[0]
     async with tenant_session(tenant["org"].schema_name) as db:
@@ -263,6 +265,7 @@ async def test_phase3_care_surgery_reporting_and_operations(client, tenants):
     assert any(item["id"] == expired.json()["id"] for item in alerts.json())
 
 
+# Exercise or prepare test phase3 migration is current for this test module.
 async def test_phase3_migration_is_current(tenants):
     for tenant in tenants:
         async with tenant_session(tenant["org"].schema_name) as db:

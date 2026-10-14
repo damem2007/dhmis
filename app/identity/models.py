@@ -18,6 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the staff user model, contract, or value object.
 class StaffUser(Record, Base):
     __tablename__ = "staff_users"
     __table_args__ = {"schema": "tenant"}
@@ -43,6 +44,7 @@ class StaffUser(Record, Base):
     photo_url: Mapped[str] = mapped_column(String(500), default="")
 
 
+# Defines the auth challenge model, contract, or value object.
 class AuthChallenge(Record, Base):
     __tablename__ = "auth_challenges"
     __table_args__ = {"schema": "tenant"}
@@ -53,6 +55,7 @@ class AuthChallenge(Record, Base):
     used: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+# Defines the staff session model, contract, or value object.
 class StaffSession(Record, Base):
     __tablename__ = "staff_sessions"
     __table_args__ = {"schema": "tenant"}
@@ -62,6 +65,7 @@ class StaffSession(Record, Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+# Defines the staff invite model, contract, or value object.
 class StaffInvite(Record, Base):
     __tablename__ = "staff_invites"
     __table_args__ = {"schema": "tenant"}
@@ -80,6 +84,7 @@ class StaffInvite(Record, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+# Defines the staff location assignment model, contract, or value object.
 class StaffLocationAssignment(Record, Base):
     __tablename__ = "staff_location_assignments"
     __table_args__ = (
@@ -116,6 +121,7 @@ class StaffLocationAssignment(Record, Base):
     replaced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+# Defines the staff invite assignment model, contract, or value object.
 class StaffInviteAssignment(Record, Base):
     __tablename__ = "staff_invite_assignments"
     __table_args__ = (
@@ -149,6 +155,7 @@ class StaffInviteAssignment(Record, Base):
     status: Mapped[str] = mapped_column(String(30), default="pending")
 
 
+# Defines the password reset challenge model, contract, or value object.
 class PasswordResetChallenge(Record, Base):
     __tablename__ = "password_reset_challenges"
     __table_args__ = {"schema": "tenant"}
@@ -160,6 +167,7 @@ class PasswordResetChallenge(Record, Base):
     reason: Mapped[str] = mapped_column(String(1000), default="")
 
 
+# Defines the auth rate limit model, contract, or value object.
 class AuthRateLimit(Base):
     __tablename__ = "auth_rate_limits"
     __table_args__ = {"schema": "dhmis_control"}

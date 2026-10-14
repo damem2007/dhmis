@@ -86,6 +86,7 @@ app.include_router(financial_operations, prefix="/v1")
 app.include_router(notifications, prefix="/v1")
 
 
+# Handle integrity error for this module.
 @app.exception_handler(IntegrityError)
 async def integrity_error(request, error):
     return JSONResponse(
@@ -93,11 +94,13 @@ async def integrity_error(request, error):
     )
 
 
+# Handle health for this module.
 @app.get("/health")
 async def health():
     return {"status": "ok", "environment": settings().environment, "production_ready": False}
 
 
+# Create or issue request audit context while applying existing validation and authorization.
 @app.middleware("http")
 async def request_audit_context(request: Request, call_next):
     marker = request_context.set(
@@ -112,6 +115,7 @@ async def request_audit_context(request: Request, call_next):
         request_context.reset(marker)
 
 
+# Handle integration failure for this module.
 @app.exception_handler(IntegrationFailure)
 async def integration_failure(request, error):
     return JSONResponse(status_code=502, content={"detail": str(error)})

@@ -12,6 +12,7 @@ branch_labels = None
 depends_on = None
 
 
+# Run the upgrade entry point for this module.
 def upgrade():
     schema = context.config.attributes["schema"]
     group = "control" if schema == "dhmis_control" else "tenant"
@@ -19,6 +20,7 @@ def upgrade():
     for statement in snapshot[group]:
         op.execute(statement.replace("tenant.", f'"{schema}".'))
 
+    # Handle add for this module.
     def add(table, name, type_, default=None, nullable=False):
         op.add_column(table, sa.Column(name, type_, nullable=nullable, server_default=default), schema=schema)
 
@@ -104,5 +106,6 @@ def upgrade():
         )
 
 
+# Run the downgrade entry point for this module.
 def downgrade():
     raise RuntimeError("Use a reviewed forward migration")

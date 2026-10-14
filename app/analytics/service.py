@@ -38,6 +38,7 @@ ROLE_METRICS = {
 }
 
 
+# Handle boundaries for this module.
 def boundaries(start: date, end: date):
     return (
         datetime.combine(start, time.min, tzinfo=UTC),
@@ -45,6 +46,7 @@ def boundaries(start: date, end: date):
     )
 
 
+# Handle scoped for this module.
 def scoped(query, model, scope: AnalyticsScope):
     if scope.location_ids and hasattr(model, "location_id"):
         query = query.where(model.location_id.in_(scope.location_ids))
@@ -57,6 +59,7 @@ def scoped(query, model, scope: AnalyticsScope):
     return query
 
 
+# Handle metric for this module.
 def metric(key, value, *, available=True):
     definition = DEFINITIONS[key]
     return {
@@ -71,6 +74,7 @@ def metric(key, value, *, available=True):
     }
 
 
+# Handle calculate metrics for this module.
 async def calculate_metrics(db, scope: AnalyticsScope, start: date, end: date):
     beginning, ending = boundaries(start, end)
     invoice_query = scoped(
@@ -133,7 +137,7 @@ async def calculate_metrics(db, scope: AnalyticsScope, start: date, end: date):
         max(0, int((row.ends_at - row.starts_at).total_seconds() // 60))
         for row in appointments
     )
-    location_query = select(Location)
+    location_query = select(Location).where(Location.active)
     if scope.location_ids:
         location_query = location_query.where(Location.id.in_(scope.location_ids))
     locations = (await db.scalars(location_query)).all()
@@ -186,7 +190,7 @@ async def organization_breakdown(db, scope: AnalyticsScope, start: date, end: da
     if scope.profile not in {"organization-executive", "clinic-admin"}:
         raise PermissionError("Organization breakdown is outside this role scope")
     beginning, ending = boundaries(start, end)
-    location_query = select(Location).order_by(Location.name)
+    location_query = select(Location).where(Location.active).order_by(Location.name)
     if scope.location_ids:
         location_query = location_query.where(Location.id.in_(scope.location_ids))
     locations = (await db.scalars(location_query)).all()
@@ -279,6 +283,7 @@ async def organization_breakdown(db, scope: AnalyticsScope, start: date, end: da
     return {"locations": location_rows, "providers": provider_rows}
 
 
+# Handle upsert action for this module.
 async def upsert_action(db, *, dedupe_key: str, actor_id: str, **values):
     row = await db.scalar(
         select(AnalyticsActionItem).where(AnalyticsActionItem.dedupe_key == dedupe_key)
@@ -301,6 +306,7 @@ async def upsert_action(db, *, dedupe_key: str, actor_id: str, **values):
     return row
 
 
+# Handle project actions for this module.
 async def project_actions(db, actor, scope: AnalyticsScope):
     failed = (
         await db.scalars(
@@ -417,6 +423,7 @@ async def project_actions(db, actor, scope: AnalyticsScope):
     await db.flush()
 
 
+# Handle visible actions for this module.
 async def visible_actions(db, scope: AnalyticsScope, *, status: str | None = None, limit=10):
     query = select(AnalyticsActionItem).order_by(
         AnalyticsActionItem.severity, AnalyticsActionItem.source_updated_at.desc()
@@ -438,6 +445,7 @@ async def visible_actions(db, scope: AnalyticsScope, *, status: str | None = Non
     return [serialize(row) for row in rows[:limit]]
 
 
+# Handle worklist for this module.
 async def worklist(
     db,
     key: str,

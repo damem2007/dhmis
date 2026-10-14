@@ -14,6 +14,7 @@ from app.rbac.models import PlatformChangeRequest, TenantChangeRequest
 from app.rbac.workflow import expire_requests
 
 
+# Handle tick for this module.
 async def tick(context):
     async with control_session() as db:
         await expire_requests(db, PlatformChangeRequest)
@@ -43,6 +44,7 @@ async def tick(context):
     return results
 
 
+# Defines the worker settings model, contract, or value object.
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings().redis_url)
     functions = [tick, platform_tick]

@@ -15,6 +15,7 @@ from app.platform_identity.models import (
 )
 
 
+# Exercise or prepare test platform invitation and password reset delivery for this test module.
 async def test_platform_invitation_and_password_reset_delivery(client):
     marker = uuid4().hex[:12]
     email = f"platform-delivery-{marker}@example.test"

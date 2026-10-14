@@ -11,6 +11,7 @@ from app.scheduling.service import book, book_series, cancel_booking
 router = APIRouter(prefix="/appointments", tags=["Scheduling"])
 
 
+# Handle appointments for this module.
 @router.get("")
 async def appointments(db=Depends(db_session), actor=Depends(permit("scheduling"))):
     rows = (await db.scalars(select(Appointment).order_by(Appointment.starts_at).limit(300))).all()
@@ -18,11 +19,13 @@ async def appointments(db=Depends(db_session), actor=Depends(permit("scheduling"
     return [serialize(row) for row in rows]
 
 
+# Handle create for this module.
 @router.post("", status_code=201)
 async def create(body: Booking, db=Depends(db_session), actor=Depends(permit("scheduling"))):
     return serialize(await book(db, actor, body))
 
 
+# Create or issue create series while applying existing validation and authorization.
 @router.post("/series", status_code=201)
 async def create_series(
     body: SeriesBooking, db=Depends(db_session), actor=Depends(permit("scheduling"))
@@ -30,6 +33,7 @@ async def create_series(
     return [serialize(row) for row in await book_series(db, actor, body)]
 
 
+# Handle reschedule for this module.
 @router.put("/{identifier}")
 async def reschedule(
     identifier: str, body: Booking, db=Depends(db_session), actor=Depends(permit("scheduling"))
@@ -37,6 +41,7 @@ async def reschedule(
     return serialize(await book(db, actor, body, identifier))
 
 
+# Handle cancel for this module.
 @router.post("/{identifier}/cancel")
 async def cancel(
     identifier: str, body: Cancellation, db=Depends(db_session), actor=Depends(permit("scheduling"))
@@ -44,6 +49,7 @@ async def cancel(
     return serialize(await cancel_booking(db, actor, identifier, body.reason))
 
 
+# Handle no show for this module.
 @router.post("/{identifier}/no-show")
 async def no_show(
     identifier: str, body: NoShow, db=Depends(db_session), actor=Depends(permit("scheduling"))
@@ -68,6 +74,7 @@ async def no_show(
     return serialize(row)
 
 
+# Validate or enforce check in before the operation continues.
 @router.post("/{identifier}/check-in")
 async def check_in(identifier: str, db=Depends(db_session), actor=Depends(permit("scheduling"))):
     from app.clinical.models import Encounter

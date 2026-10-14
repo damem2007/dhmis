@@ -14,6 +14,7 @@ from app.organizations.models import Location, Organization
 from app.organizations.tenant_resolution import normalize_slug
 
 
+# Exercise or prepare future booking for this test module.
 def future_booking(tenant, patient_id):
     start = (datetime.now(timezone.utc) + timedelta(days=60)).replace(
         hour=17, minute=0, second=0, microsecond=0
@@ -29,12 +30,14 @@ def future_booking(tenant, patient_id):
     }
 
 
+# Exercise or prepare test reserved platform routes are not tenant slugs for this test module.
 def test_reserved_platform_routes_are_not_tenant_slugs():
     with pytest.raises(ValueError):
         normalize_slug("admin")
     assert normalize_slug("Maple Clinic") == "maple-clinic"
 
 
+# Exercise or prepare test tenant settings are runtime source without control plane mutation for this test module.
 async def test_tenant_settings_are_runtime_source_without_control_plane_mutation(client, tenants):
     tenant = tenants[0]
     async with control_session() as db:
@@ -80,6 +83,7 @@ async def test_tenant_settings_are_runtime_source_without_control_plane_mutation
         runtime.jurisdiction_policy = legacy["jurisdiction_policy"]
 
 
+# Exercise or prepare test adapter override requires platform approval for this test module.
 async def test_adapter_override_requires_platform_approval(client, tenants):
     tenant = tenants[0]
     requested = await client.post(
@@ -115,6 +119,7 @@ async def test_adapter_override_requires_platform_approval(client, tenants):
         override.provider_name = "sandbox"
 
 
+# Exercise or prepare test role dashboard reconciles and enforces scope and export for this test module.
 async def test_role_dashboard_reconciles_and_enforces_scope_and_export(client, tenants):
     tenant = tenants[0]
     dashboard = await client.get(
@@ -153,6 +158,7 @@ async def test_role_dashboard_reconciles_and_enforces_scope_and_export(client, t
     assert allowed_export.status_code == 200
 
 
+# Exercise or prepare test slug domain resolution and authenticated tenant agreement for this test module.
 async def test_slug_domain_resolution_and_authenticated_tenant_agreement(client, tenants):
     first, second = tenants
     resolved = await client.get("/v1/tenants/resolve", params={"slug": first["org"].slug})
@@ -190,6 +196,7 @@ async def test_slug_domain_resolution_and_authenticated_tenant_agreement(client,
             organization.domains = previous
 
 
+# Exercise or prepare test front office is optional and booking is independent for this test module.
 async def test_front_office_is_optional_and_booking_is_independent(client, tenants):
     tenant = tenants[0]
     async with control_session() as db:
@@ -227,6 +234,7 @@ async def test_front_office_is_optional_and_booking_is_independent(client, tenan
             ) = prior
 
 
+# Exercise or prepare test access lifecycle templates and widget manifest for this test module.
 async def test_access_lifecycle_templates_and_widget_manifest(client, tenants):
     tenant = tenants[0]
     access = await client.get("/v1/organization/access", headers=tenant["headers"])
@@ -294,6 +302,7 @@ async def test_access_lifecycle_templates_and_widget_manifest(client, tenants):
     assert [row["id"] for row in widget.json()["services"]] == [tenant["service"].id]
 
 
+# Exercise or prepare test appointment verification is generic and creates patient session for this test module.
 async def test_appointment_verification_is_generic_and_creates_patient_session(client, tenants):
     tenant, other = tenants
     email = f"activation-{tenant['org'].id[:8]}@example.test"

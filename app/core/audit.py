@@ -8,6 +8,7 @@ from app.core.models import Base, Record
 request_context = ContextVar("request_context", default={})
 
 
+# Defines the audit event model, contract, or value object.
 class AuditEvent(Record, Base):
     __tablename__ = "audit_events"
     __table_args__ = {"schema": "tenant"}
@@ -17,6 +18,7 @@ class AuditEvent(Record, Base):
     details: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Handle audit for this module.
 def audit(db, actor, action, resource, resource_id="", **details):
     details = {**request_context.get(), **details}
     actor_context = db.info.get("actor")

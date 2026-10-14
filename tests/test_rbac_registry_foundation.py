@@ -15,6 +15,7 @@ from app.rbac.models import (
 from app.rbac.registry import load_approved_registry, synchronize_permission_registry
 
 
+# Exercise or prepare test approved registry is complete and keeps domain identity for this test module.
 def test_approved_registry_is_complete_and_keeps_domain_identity():
     registry = load_approved_registry()
     assert registry.version == "0.3.0-approved"
@@ -27,6 +28,7 @@ def test_approved_registry_is_complete_and_keeps_domain_identity():
     assert ("tenant", "audit.audit_export.export") in registry.permissions
 
 
+# Exercise or prepare test registry sync and locked roles are tenant isolated for this test module.
 async def test_registry_sync_and_locked_roles_are_tenant_isolated(tenants):
     async with control_session() as db:
         result = await synchronize_permission_registry(db, "test-registry-sync")

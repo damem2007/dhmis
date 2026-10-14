@@ -79,6 +79,7 @@ router = APIRouter(tags=["Roles and access"])
 PAGE_SIZES = {10, 25, 50}
 
 
+# Defines the role create model, contract, or value object.
 class RoleCreate(BaseModel):
     name: str = Field(min_length=3, max_length=160)
     description: str = Field(default="", max_length=1000)
@@ -86,6 +87,7 @@ class RoleCreate(BaseModel):
     copy_from_id: str | None = Field(default=None, max_length=36)
 
 
+# Defines the role update model, contract, or value object.
 class RoleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=3, max_length=160)
     description: str | None = Field(default=None, max_length=1000)
@@ -93,6 +95,7 @@ class RoleUpdate(BaseModel):
     version: int = Field(ge=1)
 
 
+# Defines the grant conditions model, contract, or value object.
 class GrantConditions(BaseModel):
     step_up_mfa_minutes: int | None = Field(default=None, ge=0, le=1440)
     requires_approval: bool | None = None
@@ -100,6 +103,7 @@ class GrantConditions(BaseModel):
     ip_allow_list: list[str] = Field(default_factory=list, max_length=100)
 
 
+# Defines the grant input model, contract, or value object.
 class GrantInput(BaseModel):
     permission_key: str = Field(min_length=5, max_length=180)
     effect: str = Field(pattern="^(allow|deny)$")
@@ -107,11 +111,13 @@ class GrantInput(BaseModel):
     conditions: GrantConditions = Field(default_factory=GrantConditions)
 
 
+# Defines the grant set model, contract, or value object.
 class GrantSet(BaseModel):
     version: int = Field(ge=1)
     grants: list[GrantInput] = Field(max_length=1200)
 
 
+# Defines the role assignment input model, contract, or value object.
 class RoleAssignmentInput(BaseModel):
     user_id: str = Field(min_length=1, max_length=36)
     role_id: str = Field(min_length=1, max_length=36)
@@ -119,6 +125,7 @@ class RoleAssignmentInput(BaseModel):
     location_id: str | None = Field(default=None, max_length=36)
     expires_at: AwareDatetime | None = None
 
+    # Handle valid reach for this module.
     @model_validator(mode="after")
     def valid_reach(self):
         if self.level == "Location" and not self.location_id:
@@ -128,6 +135,7 @@ class RoleAssignmentInput(BaseModel):
         return self
 
 
+# Defines the role change input model, contract, or value object.
 class RoleChangeInput(BaseModel):
     version: int = Field(ge=1)
     grants: list[GrantInput] = Field(max_length=1200)
@@ -137,15 +145,18 @@ class RoleChangeInput(BaseModel):
     break_glass: bool = False
 
 
+# Defines the request decision input model, contract, or value object.
 class RequestDecisionInput(BaseModel):
     comment: str = Field(default="", max_length=2000)
 
 
+# Defines the approval policy change input model, contract, or value object.
 class ApprovalPolicyChangeInput(BaseModel):
     settings: dict
     reason: str = Field(min_length=8, max_length=1000)
 
 
+# Defines the four eyes rule input model, contract, or value object.
 class FourEyesRuleInput(BaseModel):
     id: str = Field(min_length=1, max_length=80, pattern="^[a-z0-9][a-z0-9-]*$")
     name: str = Field(min_length=3, max_length=180)
@@ -154,11 +165,13 @@ class FourEyesRuleInput(BaseModel):
     patterns: list[str] = Field(min_length=1, max_length=100)
 
 
+# Defines the four eyes rules change input model, contract, or value object.
 class FourEyesRulesChangeInput(BaseModel):
     rules: list[FourEyesRuleInput] = Field(max_length=500)
     reason: str = Field(min_length=8, max_length=1000)
 
 
+# Handle tenant role lifecycle actor for this module.
 async def tenant_role_lifecycle_actor(
     action: str,
     request: Request,
@@ -172,6 +185,7 @@ async def tenant_role_lifecycle_actor(
     return await permit_tenant(permission, workflow_handles_approval=True)(request, actor)
 
 
+# Handle platform role lifecycle actor for this module.
 async def platform_role_lifecycle_actor(
     action: str,
     request: Request,
@@ -185,6 +199,7 @@ async def platform_role_lifecycle_actor(
     return await permit_platform(permission, workflow_handles_approval=True)(request, actor)
 
 
+# Internal helper for page.
 def _page(values: list[dict], page: int, size: int):
     if size not in PAGE_SIZES:
         raise HTTPException(422, "Page size must be 10, 25, or 50")
@@ -199,6 +214,7 @@ def _page(values: list[dict], page: int, size: int):
     }
 
 
+# Internal helper for permission row.
 def _permission_row(permission):
     return {
         "key": permission.key,
@@ -218,6 +234,7 @@ def _permission_row(permission):
     }
 
 
+# Internal helper for catalogue.
 def _catalogue(
     domain: Domain,
     page: int,
@@ -243,6 +260,7 @@ def _catalogue(
     return _page(rows, page, size)
 
 
+# Internal helper for decision row.
 def _decision_row(permission_key: str, decision: Decision):
     return {
         "permission_key": permission_key,
@@ -265,6 +283,7 @@ def _decision_row(permission_key: str, decision: Decision):
     }
 
 
+# Internal helper for policy payload.
 def _policy_payload(context, policy, page: int, size: int):
     rules = sorted(context.rules, key=lambda rule: (rule.priority, rule.id))
     rule_rows = []
@@ -316,6 +335,7 @@ def _policy_payload(context, policy, page: int, size: int):
     }
 
 
+# Handle tenant permissions for this module.
 @router.get("/rbac/permissions")
 async def tenant_permissions(
     domain: str = Query(default="tenant", pattern="^(tenant|platform)$"),
@@ -334,6 +354,7 @@ async def tenant_permissions(
     return _catalogue(Domain.TENANT, page, size, module, search, reviewed)
 
 
+# Handle platform permissions for this module.
 @router.get("/platform/rbac/permissions")
 async def platform_permissions(
     domain: str = Query(default="platform", pattern="^(tenant|platform)$"),
@@ -356,6 +377,7 @@ async def platform_permissions(
     return _catalogue(Domain.PLATFORM, page, size, module, search, reviewed)
 
 
+# Handle tenant policy for this module.
 @router.get("/rbac/policy")
 async def tenant_policy(
     page: int = Query(default=1, ge=1),
@@ -370,6 +392,7 @@ async def tenant_policy(
         return _policy_payload(context, policy, page, size)
 
 
+# Handle platform policy for this module.
 @router.get("/platform/rbac/policy")
 async def platform_policy(
     page: int = Query(default=1, ge=1),
@@ -383,6 +406,7 @@ async def platform_policy(
         return _policy_payload(context, policy, page, size)
 
 
+# Update change tenant policy while preserving existing validation and audit behavior.
 @router.put("/rbac/policy", status_code=202)
 async def change_tenant_policy(
     body: ApprovalPolicyChangeInput,
@@ -413,6 +437,7 @@ async def change_tenant_policy(
         return await request_payload(db, row, TenantChangeDecision)
 
 
+# Update change platform policy while preserving existing validation and audit behavior.
 @router.put("/platform/rbac/policy", status_code=202)
 async def change_platform_policy(
     body: ApprovalPolicyChangeInput,
@@ -440,6 +465,7 @@ async def change_platform_policy(
         return await request_payload(db, row, PlatformChangeDecision)
 
 
+# Update change tenant four eyes rules while preserving existing validation and audit behavior.
 @router.put("/rbac/four-eyes-rules", status_code=202)
 async def change_tenant_four_eyes_rules(
     body: FourEyesRulesChangeInput,
@@ -473,6 +499,7 @@ async def change_tenant_four_eyes_rules(
         return await request_payload(db, row, TenantChangeDecision)
 
 
+# Update change platform four eyes rules while preserving existing validation and audit behavior.
 @router.put("/platform/rbac/four-eyes-rules", status_code=202)
 async def change_platform_four_eyes_rules(
     body: FourEyesRulesChangeInput,
@@ -503,6 +530,7 @@ async def change_platform_four_eyes_rules(
         return await request_payload(db, row, PlatformChangeDecision)
 
 
+# Handle tenant check for this module.
 @router.get("/rbac/check")
 async def tenant_check(
     request: Request,
@@ -531,6 +559,7 @@ async def tenant_check(
     return _decision_row(key, decision)
 
 
+# Handle platform check for this module.
 @router.get("/platform/rbac/check")
 async def platform_check(
     request: Request,
@@ -557,6 +586,7 @@ async def platform_check(
     return _decision_row(key, decision)
 
 
+# Internal helper for list roles.
 async def _list_roles(
     db,
     role_model,
@@ -596,6 +626,7 @@ async def _list_roles(
     }
 
 
+# Internal helper for create role.
 async def _create_role(
     db,
     body: RoleCreate,
@@ -645,6 +676,7 @@ async def _create_role(
     return await role_payload(db, role, grant_model, assignment_model)
 
 
+# Internal helper for update role.
 async def _update_role(
     db,
     identifier: str,
@@ -697,6 +729,7 @@ async def _update_role(
     return await role_payload(db, role, grant_model, assignment_model)
 
 
+# Internal helper for delete draft.
 async def _delete_draft(db, identifier: str, role_model, grant_model, actor_id: str):
     role = await require_role(db, role_model, identifier, lock=True)
     ensure_mutable(role)
@@ -707,6 +740,7 @@ async def _delete_draft(db, identifier: str, role_model, grant_model, actor_id: 
     return {"status": "deleted", "role_id": identifier, "actor_id": actor_id}
 
 
+# Internal helper for lifecycle.
 async def _lifecycle(
     db,
     identifier: str,
@@ -779,6 +813,7 @@ async def _lifecycle(
     return await role_payload(db, role, grant_model, assignment_model)
 
 
+# Internal helper for assign role.
 async def _assign_role(
     db,
     body: RoleAssignmentInput,
@@ -835,6 +870,7 @@ async def _assign_role(
     }
 
 
+# Internal helper for unassign role.
 async def _unassign_role(db, identifier: str, assignment_model, role_model):
     assignment = await db.get(assignment_model, identifier)
     if assignment is None:
@@ -853,6 +889,7 @@ async def _unassign_role(db, identifier: str, assignment_model, role_model):
     return {"status": "unassigned", "assignment_id": identifier}
 
 
+# Internal helper for request list.
 async def _request_list(
     db,
     request_model,
@@ -916,6 +953,7 @@ def _friendly_approval_label(row, registry) -> str:
     }.get(row.kind, "Access policy")
 
 
+# Internal helper for approval notifications.
 async def _approval_notifications(
     db,
     request_model,
@@ -998,6 +1036,7 @@ async def _approval_notifications(
     return {"items": items, "unread_count": sum(item["counted"] for item in items)}
 
 
+# Internal helper for mark decision notifications seen.
 async def _mark_decision_notifications_seen(
     db,
     request_model,
@@ -1034,6 +1073,7 @@ async def _mark_decision_notifications_seen(
     return {"seen": len(closed)}
 
 
+# Internal helper for approver role keys.
 async def _approver_role_keys(db, actor_id: str, domain: Domain):
     if domain is Domain.TENANT:
         context = await tenant_policy_context(db)
@@ -1047,6 +1087,7 @@ async def _approver_role_keys(db, actor_id: str, domain: Domain):
     }
 
 
+# Internal helper for history.
 async def _history(db, version_model, page: int, size: int):
     if size not in PAGE_SIZES:
         raise HTTPException(422, "Page size must be 10, 25, or 50")
@@ -1080,6 +1121,7 @@ async def _history(db, version_model, page: int, size: int):
     }
 
 
+# Handle tenant roles for this module.
 @router.get("/rbac/roles")
 async def tenant_roles(
     page: int = Query(default=1, ge=1),
@@ -1097,6 +1139,7 @@ async def tenant_roles(
         return result
 
 
+# Create or issue create tenant role while applying existing validation and authorization.
 @router.post("/rbac/roles", status_code=201)
 async def create_tenant_role(
     body: RoleCreate,
@@ -1117,6 +1160,7 @@ async def create_tenant_role(
         return result
 
 
+# Handle tenant role detail for this module.
 @router.get("/rbac/roles/{identifier}")
 async def tenant_role_detail(
     identifier: str,
@@ -1130,6 +1174,7 @@ async def tenant_role_detail(
         return result
 
 
+# Update update tenant role while preserving existing validation and audit behavior.
 @router.patch("/rbac/roles/{identifier}")
 async def update_tenant_role(
     identifier: str,
@@ -1153,6 +1198,7 @@ async def update_tenant_role(
         return result
 
 
+# Apply the delete tenant role lifecycle transition and its existing safeguards.
 @router.delete("/rbac/roles/{identifier}")
 async def delete_tenant_role(
     identifier: str,
@@ -1169,6 +1215,7 @@ async def delete_tenant_role(
         return result
 
 
+# Handle tenant role grants for this module.
 @router.put("/rbac/roles/{identifier}/grants")
 async def tenant_role_grants(
     identifier: str,
@@ -1204,6 +1251,7 @@ async def tenant_role_grants(
         return result
 
 
+# Create or issue create tenant role change while applying existing validation and authorization.
 @router.post("/rbac/roles/{identifier}/changes", status_code=202)
 async def create_tenant_role_change(
     identifier: str,
@@ -1257,6 +1305,7 @@ async def create_tenant_role_change(
         }
 
 
+# Handle tenant role lifecycle for this module.
 @router.post("/rbac/roles/{identifier}/{action}")
 async def tenant_role_lifecycle(
     identifier: str,
@@ -1278,6 +1327,7 @@ async def tenant_role_lifecycle(
         return result
 
 
+# Create or issue create tenant assignment while applying existing validation and authorization.
 @router.post("/rbac/assignments", status_code=201)
 async def create_tenant_assignment(
     body: RoleAssignmentInput,
@@ -1310,6 +1360,7 @@ async def create_tenant_assignment(
         return result
 
 
+# Apply the delete tenant assignment lifecycle transition and its existing safeguards.
 @router.delete("/rbac/assignments/{identifier}")
 async def delete_tenant_assignment(
     identifier: str,
@@ -1327,6 +1378,7 @@ async def delete_tenant_assignment(
         return result
 
 
+# Handle tenant requests for this module.
 @router.get("/rbac/requests")
 async def tenant_requests(
     page: int = Query(default=1, ge=1),
@@ -1354,6 +1406,7 @@ async def tenant_requests(
         return result
 
 
+# Handle tenant approval notifications for this module.
 @router.get("/rbac/notifications")
 async def tenant_approval_notifications(
     actor: Actor = Depends(permit_tenant("reports.pending_approval_item.read")),
@@ -1374,6 +1427,7 @@ async def tenant_approval_notifications(
         return result
 
 
+# Handle mark tenant approval notifications seen for this module.
 @router.post("/rbac/notifications/seen")
 async def mark_tenant_approval_notifications_seen(
     actor: Actor = Depends(permit_tenant("reports.pending_approval_item.read")),
@@ -1390,6 +1444,7 @@ async def mark_tenant_approval_notifications_seen(
         return result
 
 
+# Handle tenant request decision for this module.
 @router.post("/rbac/requests/{identifier}/{action}")
 async def tenant_request_decision(
     identifier: str,
@@ -1443,6 +1498,7 @@ async def tenant_request_decision(
         return await request_payload(db, row, TenantChangeDecision)
 
 
+# Handle tenant history for this module.
 @router.get("/rbac/history")
 async def tenant_history(
     page: int = Query(default=1, ge=1),
@@ -1456,6 +1512,7 @@ async def tenant_history(
         return result
 
 
+# Handle platform roles for this module.
 @router.get("/platform/rbac/roles")
 async def platform_roles(
     page: int = Query(default=1, ge=1),
@@ -1479,6 +1536,7 @@ async def platform_roles(
         return result
 
 
+# Create or issue create platform role while applying existing validation and authorization.
 @router.post("/platform/rbac/roles", status_code=201)
 async def create_platform_role(
     body: RoleCreate,
@@ -1500,6 +1558,7 @@ async def create_platform_role(
         return result
 
 
+# Handle platform role detail for this module.
 @router.get("/platform/rbac/roles/{identifier}")
 async def platform_role_detail(
     identifier: str,
@@ -1514,6 +1573,7 @@ async def platform_role_detail(
         return result
 
 
+# Update update platform role while preserving existing validation and audit behavior.
 @router.patch("/platform/rbac/roles/{identifier}")
 async def update_platform_role(
     identifier: str,
@@ -1538,6 +1598,7 @@ async def update_platform_role(
         return result
 
 
+# Apply the delete platform role lifecycle transition and its existing safeguards.
 @router.delete("/platform/rbac/roles/{identifier}")
 async def delete_platform_role(
     identifier: str,
@@ -1555,6 +1616,7 @@ async def delete_platform_role(
         return result
 
 
+# Handle platform role grants for this module.
 @router.put("/platform/rbac/roles/{identifier}/grants")
 async def platform_role_grants(
     identifier: str,
@@ -1590,6 +1652,7 @@ async def platform_role_grants(
         return result
 
 
+# Create or issue create platform role change while applying existing validation and authorization.
 @router.post("/platform/rbac/roles/{identifier}/changes", status_code=202)
 async def create_platform_role_change(
     identifier: str,
@@ -1639,6 +1702,7 @@ async def create_platform_role_change(
         }
 
 
+# Handle platform role lifecycle for this module.
 @router.post("/platform/rbac/roles/{identifier}/{action}")
 async def platform_role_lifecycle(
     identifier: str,
@@ -1664,6 +1728,7 @@ async def platform_role_lifecycle(
         return result
 
 
+# Create or issue create platform assignment while applying existing validation and authorization.
 @router.post("/platform/rbac/assignments", status_code=201)
 async def create_platform_assignment(
     body: RoleAssignmentInput,
@@ -1693,6 +1758,7 @@ async def create_platform_assignment(
         return result
 
 
+# Apply the delete platform assignment lifecycle transition and its existing safeguards.
 @router.delete("/platform/rbac/assignments/{identifier}")
 async def delete_platform_assignment(
     identifier: str,
@@ -1716,6 +1782,7 @@ async def delete_platform_assignment(
         return result
 
 
+# Handle platform requests for this module.
 @router.get("/platform/rbac/requests")
 async def platform_requests(
     page: int = Query(default=1, ge=1),
@@ -1742,6 +1809,7 @@ async def platform_requests(
         return result
 
 
+# Handle platform approval notifications for this module.
 @router.get("/platform/rbac/notifications")
 async def platform_approval_notifications(
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("access.platform_role.read")),
@@ -1761,6 +1829,7 @@ async def platform_approval_notifications(
         return result
 
 
+# Handle mark platform approval notifications seen for this module.
 @router.post("/platform/rbac/notifications/seen")
 async def mark_platform_approval_notifications_seen(
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("access.platform_role.read")),
@@ -1776,6 +1845,7 @@ async def mark_platform_approval_notifications_seen(
         return result
 
 
+# Handle platform request decision for this module.
 @router.post("/platform/rbac/requests/{identifier}/{action}")
 async def platform_request_decision(
     identifier: str,
@@ -1836,6 +1906,7 @@ async def platform_request_decision(
         return await request_payload(db, row, PlatformChangeDecision)
 
 
+# Handle platform history for this module.
 @router.get("/platform/rbac/history")
 async def platform_history(
     page: int = Query(default=1, ge=1),

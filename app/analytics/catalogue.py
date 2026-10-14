@@ -1,6 +1,7 @@
 from dataclasses import asdict, dataclass
 
 
+# Defines the metric definition model, contract, or value object.
 @dataclass(frozen=True)
 class MetricDefinition:
     key: str
@@ -31,5 +32,6 @@ DEFINITIONS = {
 }
 
 
+# Handle public catalogue for this module.
 def public_catalogue():
     return [asdict(item) for item in DEFINITIONS.values()]

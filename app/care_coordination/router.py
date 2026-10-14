@@ -25,12 +25,14 @@ REFERRAL_TRANSITIONS = {
 }
 
 
+# Handle result for this module.
 def result(row):
     values = serialize(row)
     values["overdue"] = row.status != "completed" and row.due_at < datetime.now(timezone.utc)
     return values
 
 
+# Defines the lab input model, contract, or value object.
 class LabInput(BaseModel):
     patient_id: str
     provider_id: str
@@ -40,6 +42,7 @@ class LabInput(BaseModel):
     notes: str = Field(default="", max_length=2000)
 
 
+# Defines the referral input model, contract, or value object.
 class ReferralInput(BaseModel):
     patient_id: str
     provider_id: str
@@ -50,11 +53,13 @@ class ReferralInput(BaseModel):
     reason: str = Field(min_length=3, max_length=2000)
 
 
+# Defines the transition model, contract, or value object.
 class Transition(BaseModel):
     status: str
     note: str = Field(default="", max_length=1000)
 
 
+# Validate or enforce validate people before the operation continues.
 async def validate_people(db, patient_id: str, provider_id: str):
     patient = await required(db, Patient, patient_id)
     provider = await required(db, StaffUser, provider_id)
@@ -63,6 +68,7 @@ async def validate_people(db, patient_id: str, provider_id: str):
     return patient
 
 
+# Handle transition for this module.
 async def transition(db, actor, row, body, allowed, resource):
     if body.status not in allowed.get(row.status, set()):
         raise HTTPException(409, f"Cannot move {resource} from {row.status} to {body.status}")
@@ -84,6 +90,7 @@ async def transition(db, actor, row, body, allowed, resource):
     return result(row)
 
 
+# Handle timeline for this module.
 @router.get("/timeline/{patient_id}")
 async def timeline(
     patient_id: str,
@@ -102,6 +109,7 @@ async def timeline(
     }
 
 
+# Handle overdue for this module.
 @router.get("/overdue")
 async def overdue(
     location_id: str | None = Query(default=None),
@@ -122,6 +130,7 @@ async def overdue(
     }
 
 
+# Create or issue create lab while applying existing validation and authorization.
 @router.post("/labs", status_code=201)
 async def create_lab(
     body: LabInput,
@@ -141,6 +150,7 @@ async def create_lab(
     return result(row)
 
 
+# Handle transition lab for this module.
 @router.post("/labs/{identifier}/transition")
 async def transition_lab(
     identifier: str,
@@ -158,6 +168,7 @@ async def transition_lab(
     )
 
 
+# Create or issue create referral while applying existing validation and authorization.
 @router.post("/referrals", status_code=201)
 async def create_referral(
     body: ReferralInput,
@@ -177,6 +188,7 @@ async def create_referral(
     return result(row)
 
 
+# Handle transition referral for this module.
 @router.post("/referrals/{identifier}/transition")
 async def transition_referral(
     identifier: str,

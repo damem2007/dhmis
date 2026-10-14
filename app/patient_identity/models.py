@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the patient user model, contract, or value object.
 class PatientUser(Record, Base):
     __tablename__ = "patient_users"
     __table_args__ = {"schema": "tenant"}
@@ -14,6 +15,7 @@ class PatientUser(Record, Base):
     token_version: Mapped[int] = mapped_column(Integer, default=1)
 
 
+# Defines the patient session model, contract, or value object.
 class PatientSession(Record, Base):
     __tablename__ = "patient_sessions"
     __table_args__ = {"schema": "tenant"}
@@ -23,6 +25,7 @@ class PatientSession(Record, Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+# Defines the patient invite model, contract, or value object.
 class PatientInvite(Record, Base):
     __tablename__ = "patient_invites"
     __table_args__ = {"schema": "tenant"}
@@ -33,6 +36,7 @@ class PatientInvite(Record, Base):
     used: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+# Defines the patient verification challenge model, contract, or value object.
 class PatientVerificationChallenge(Record, Base):
     __tablename__ = "patient_verification_challenges"
     __table_args__ = {"schema": "tenant"}

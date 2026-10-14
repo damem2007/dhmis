@@ -28,6 +28,7 @@ from app.rbac.workflow import (
 router = APIRouter(prefix="/billing", tags=["Financial operations"])
 
 
+# Defines the fee input model, contract, or value object.
 class FeeInput(BaseModel):
     service_id: str
     location_id: str | None = None
@@ -36,6 +37,7 @@ class FeeInput(BaseModel):
     effective_at: AwareDatetime
 
 
+# Handle fee for this module.
 @router.post("/fee-versions", status_code=201)
 async def fee(body: FeeInput, db=Depends(db_session), actor=Depends(permit("billing"))):
     await required(db, Service, body.service_id)
@@ -48,6 +50,7 @@ async def fee(body: FeeInput, db=Depends(db_session), actor=Depends(permit("bill
     return serialize(row)
 
 
+# Handle fees for this module.
 @router.get("/fee-versions")
 async def fees(db=Depends(db_session), actor=Depends(permit("billing"))):
     return [
@@ -56,12 +59,14 @@ async def fees(db=Depends(db_session), actor=Depends(permit("billing"))):
     ]
 
 
+# Defines the adjustment model, contract, or value object.
 class Adjustment(BaseModel):
     amount_cents: int
     reason: str = Field(min_length=5, max_length=500)
     idempotency_key: str = Field(min_length=8, max_length=100)
 
 
+# Handle adjustment for this module.
 @router.post("/invoices/{identifier}/adjustments")
 async def adjustment(
     identifier: str, body: Adjustment, db=Depends(db_session), actor=Depends(permit("billing"))
@@ -112,6 +117,7 @@ async def adjustment(
     return serialize(entry)
 
 
+# Defines the refund model, contract, or value object.
 class Refund(BaseModel):
     payment_id: str
     amount_cents: int = Field(gt=0)
@@ -120,6 +126,7 @@ class Refund(BaseModel):
     approval_request_id: str | None = Field(default=None, max_length=36)
 
 
+# Handle refund for this module.
 @router.post("/invoices/{identifier}/refunds")
 async def refund(
     identifier: str,
@@ -239,11 +246,13 @@ async def refund(
     return serialize(refund)
 
 
+# Defines the plan input model, contract, or value object.
 class PlanInput(BaseModel):
     installments: int = Field(ge=2, le=24)
     first_due: date
 
 
+# Handle plan for this module.
 @router.post("/invoices/{identifier}/payment-plan", status_code=201)
 async def plan(identifier: str, body: PlanInput, db=Depends(db_session), actor=Depends(permit("billing"))):
     return serialize(
@@ -251,6 +260,7 @@ async def plan(identifier: str, body: PlanInput, db=Depends(db_session), actor=D
     )
 
 
+# Handle statement for this module.
 @router.get("/statement/{patient_id}")
 async def statement(patient_id: str, db=Depends(db_session), actor=Depends(permit("billing"))):
     await required(db, Patient, patient_id)

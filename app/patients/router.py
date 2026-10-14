@@ -26,6 +26,7 @@ from app.patients.schemas import PatientCreate
 router = APIRouter(prefix="/patients", tags=["Patients"])
 
 
+# Handle patients for this module.
 @router.get("")
 async def patients(
     q: str = Query("", max_length=80), db=Depends(db_session), actor=Depends(permit("patients"))
@@ -40,6 +41,7 @@ async def patients(
     return [serialize(row) for row in rows]
 
 
+# Handle create for this module.
 @router.post("", status_code=201)
 async def create(body: PatientCreate, db=Depends(db_session), actor=Depends(permit("patients"))):
     await required(db, Location, body.location_id)
@@ -53,6 +55,7 @@ async def create(body: PatientCreate, db=Depends(db_session), actor=Depends(perm
     return result
 
 
+# Handle update for this module.
 @router.put("/{identifier}")
 async def update(
     identifier: str, body: PatientCreate, db=Depends(db_session), actor=Depends(permit("patients"))
@@ -69,11 +72,13 @@ async def update(
     return serialize(row)
 
 
+# Defines the archive input model, contract, or value object.
 class ArchiveInput(BaseModel):
     reason: str = Field(min_length=10, max_length=1000)
     approval_request_id: str | None = Field(default=None, max_length=36)
 
 
+# Internal helper for archive patient.
 async def _archive_patient(
     identifier: str,
     body: ArchiveInput,
@@ -149,6 +154,7 @@ async def _archive_patient(
     return serialize(row)
 
 
+# Handle archive for this module.
 @router.post("/{identifier}/archive", status_code=200)
 async def archive(
     identifier: str,
@@ -159,6 +165,7 @@ async def archive(
     return await _archive_patient(identifier, body, actor, db)
 
 
+# Handle restore for this module.
 @router.post("/{identifier}/restore", status_code=200)
 async def restore(
     identifier: str,
@@ -169,12 +176,14 @@ async def restore(
     return await _archive_patient(identifier, body, actor, db, restore=True)
 
 
+# Defines the guardian input model, contract, or value object.
 class GuardianInput(BaseModel):
     guardian_id: str
     dependent_id: str
     relationship: str = Field(min_length=2, max_length=60)
 
 
+# Handle guardian for this module.
 @router.post("/guardian-links", status_code=201)
 async def guardian(body: GuardianInput, db=Depends(db_session), actor=Depends(permit("patients"))):
     from fastapi import HTTPException
@@ -197,6 +206,7 @@ async def guardian(body: GuardianInput, db=Depends(db_session), actor=Depends(pe
     return serialize(row)
 
 
+# Handle family for this module.
 @router.get("/{identifier}/family")
 async def family(identifier: str, db=Depends(db_session), actor=Depends(permit("patients"))):
     await required(db, Patient, identifier)

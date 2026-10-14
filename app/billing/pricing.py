@@ -9,6 +9,7 @@ from app.core.repository import add, required
 from app.patients.models import Patient
 
 
+# Handle price for this module.
 async def price(db, service_id, location_id, provider_id=None, at=None):
     service = await required(db, Service, service_id)
     at = at or datetime.now(timezone.utc)
@@ -40,6 +41,7 @@ async def price(db, service_id, location_id, provider_id=None, at=None):
     }
 
 
+# Create or issue create invoice while applying existing validation and authorization.
 async def create_invoice(db, actor, patient_id, procedures, provider_id=None):
     patient = await required(db, Patient, patient_id)
     lines = []
@@ -84,6 +86,7 @@ async def create_invoice(db, actor, patient_id, procedures, provider_id=None):
     return invoice
 
 
+# Handle estimate options for this module.
 async def estimate_options(db, body, patient):
     plans = (
         await db.scalars(

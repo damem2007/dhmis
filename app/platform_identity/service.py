@@ -14,6 +14,7 @@ from app.platform_identity.models import PlatformAuditEvent, PlatformSession, Pl
 platform_bearer = HTTPBearer(auto_error=False)
 
 
+# Defines the platform actor model, contract, or value object.
 @dataclass
 class PlatformActor:
     user_id: str
@@ -30,6 +31,7 @@ def is_bootstrap_platform_user(user: PlatformUser) -> bool:
     return str(user.created_by or "").strip().lower() == "bootstrap"
 
 
+# Handle platform audit for this module.
 def platform_audit(db, actor_id, action, *, organization_id=None, reason="", details=None):
     db.add(
         PlatformAuditEvent(
@@ -44,6 +46,7 @@ def platform_audit(db, actor_id, action, *, organization_id=None, reason="", det
     )
 
 
+# Create or issue issue platform token while applying existing validation and authorization.
 async def issue_platform_token(db, user: PlatformUser):
     now = int(time.time())
     session = PlatformSession(user_id=user.id, expires=now + 1800, last_active=now)
@@ -65,6 +68,7 @@ async def issue_platform_token(db, user: PlatformUser):
     )
 
 
+# Handle current platform for this module.
 async def current_platform(
     credentials: HTTPAuthorizationCredentials | None = Depends(platform_bearer),
 ):
@@ -112,6 +116,7 @@ async def current_platform(
         raise HTTPException(401, "Valid platform operator session required") from None
 
 
+# Handle platform or bootstrap for this module.
 async def platform_or_bootstrap(
     credentials: HTTPAuthorizationCredentials | None = Depends(platform_bearer),
     x_bootstrap_key: str = Header(default=""),

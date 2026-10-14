@@ -13,6 +13,7 @@ from app.patients.models import Patient
 router = APIRouter(prefix="/billing", tags=["Billing and ledger"])
 
 
+# Defines the service input model, contract, or value object.
 class ServiceInput(BaseModel):
     code: str = Field(min_length=1, max_length=30)
     name: str = Field(min_length=1, max_length=180)
@@ -20,23 +21,27 @@ class ServiceInput(BaseModel):
     description: str = Field(default="", max_length=1000)
 
 
+# Defines the invoice input model, contract, or value object.
 class InvoiceInput(BaseModel):
     patient_id: str
     service_ids: list[str] = Field(min_length=1, max_length=100)
 
 
+# Defines the payment input model, contract, or value object.
 class PaymentInput(BaseModel):
     payment_method_token: str | None = None
     amount_cents: int = Field(gt=0)
     idempotency_key: str = Field(min_length=8, max_length=100)
 
 
+# Handle services for this module.
 @router.get("/services")
 async def services(db=Depends(db_session), actor=Depends(permit("billing"))):
     await ensure_default_services(db)
     return [serialize(x) for x in (await db.scalars(select(Service).order_by(Service.name))).all()]
 
 
+# Handle service for this module.
 @router.post("/services", status_code=201)
 async def service(body: ServiceInput, db=Depends(db_session), actor=Depends(permit("billing"))):
     if await db.scalar(select(Service).where(Service.code == body.code)):
@@ -46,6 +51,7 @@ async def service(body: ServiceInput, db=Depends(db_session), actor=Depends(perm
     return serialize(row)
 
 
+# Update update service while preserving existing validation and audit behavior.
 @router.put("/services/{identifier}")
 async def update_service(identifier: str, body: ServiceInput, db=Depends(db_session), actor=Depends(permit("billing"))):
     row = await required(db, Service, identifier)
@@ -58,6 +64,7 @@ async def update_service(identifier: str, body: ServiceInput, db=Depends(db_sess
     return serialize(row)
 
 
+# Apply the delete service lifecycle transition and its existing safeguards.
 @router.delete("/services/{identifier}")
 async def delete_service(identifier: str, db=Depends(db_session), actor=Depends(permit("billing"))):
     row = await required(db, Service, identifier)
@@ -71,6 +78,7 @@ async def delete_service(identifier: str, db=Depends(db_session), actor=Depends(
     return {"deleted": True, "id": identifier}
 
 
+# Handle invoices for this module.
 @router.get("/invoices")
 async def invoices(db=Depends(db_session), actor=Depends(permit("billing"))):
     rows = (await db.scalars(select(Invoice).order_by(Invoice.created_at.desc()).limit(200))).all()
@@ -78,6 +86,7 @@ async def invoices(db=Depends(db_session), actor=Depends(permit("billing"))):
     return [serialize(x) for x in rows]
 
 
+# Handle invoice for this module.
 @router.post("/invoices", status_code=201)
 async def invoice(body: InvoiceInput, db=Depends(db_session), actor=Depends(permit("billing"))):
     from app.billing.pricing import create_invoice
@@ -92,6 +101,7 @@ async def invoice(body: InvoiceInput, db=Depends(db_session), actor=Depends(perm
     )
 
 
+# Handle pay for this module.
 @router.post("/invoices/{identifier}/payments")
 async def pay(identifier: str, body: PaymentInput, db=Depends(db_session), actor=Depends(permit("billing"))):
     return serialize(
@@ -106,6 +116,7 @@ async def pay(identifier: str, body: PaymentInput, db=Depends(db_session), actor
     )
 
 
+# Handle ledger for this module.
 @router.get("/ledger/{patient_id}")
 async def ledger(patient_id: str, db=Depends(db_session), actor=Depends(permit("billing"))):
     await required(db, Patient, patient_id)
@@ -118,6 +129,7 @@ async def ledger(patient_id: str, db=Depends(db_session), actor=Depends(permit("
     return {"entries": [serialize(x) for x in rows], "balance_cents": sum(x.amount_cents for x in rows)}
 
 
+# Handle catalog for this module.
 @router.get("/catalog")
 async def catalog(db=Depends(db_session), actor=Depends(permit("dashboard"))):
     # Keep existing tenant schemas aligned with the catalogue defaults even

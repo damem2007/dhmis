@@ -1,6 +1,7 @@
 from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 
+# Defines the booking model, contract, or value object.
 class Booking(BaseModel):
     patient_id: str
     location_id: str
@@ -10,6 +11,7 @@ class Booking(BaseModel):
     ends_at: AwareDatetime
     procedure: str = Field(min_length=1, max_length=180)
 
+    # Handle valid duration for this module.
     @model_validator(mode="after")
     def valid_duration(self):
         seconds = (self.ends_at - self.starts_at).total_seconds()
@@ -18,14 +20,17 @@ class Booking(BaseModel):
         return self
 
 
+# Defines the cancellation model, contract, or value object.
 class Cancellation(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+# Defines the series booking model, contract, or value object.
 class SeriesBooking(Booking):
     occurrences: int = Field(ge=2, le=52)
     interval_days: int = Field(ge=1, le=365, default=7)
 
 
+# Defines the no show model, contract, or value object.
 class NoShow(BaseModel):
     reason: str = Field(min_length=3, max_length=500, default="Patient did not attend")

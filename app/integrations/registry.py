@@ -34,6 +34,7 @@ from app.integrations.sandboxes import (
 )
 
 
+# Defines the provider context model, contract, or value object.
 @dataclass(frozen=True)
 class ProviderContext:
     organization_id: str
@@ -41,6 +42,7 @@ class ProviderContext:
     options: dict = field(default_factory=dict)
 
 
+# Defines the registration model, contract, or value object.
 @dataclass(frozen=True)
 class Registration:
     factory: Callable
@@ -61,12 +63,14 @@ CONTRACTS = {
 REGISTRY = {capability: {} for capability in CONTRACTS}
 
 
+# Handle register provider for this module.
 def register_provider(capability, name, factory, *, sandbox=False):
     if capability not in CONTRACTS or not name or name in REGISTRY[capability]:
         raise ValueError("Invalid or duplicate provider registration")
     REGISTRY[capability][name] = Registration(factory, sandbox)
 
 
+# Handle selected provider for this module.
 def selected_provider(organization, capability):
     selected = getattr(organization, "_effective_adapters", None)
     if selected is None:
@@ -90,6 +94,7 @@ def provider_options(*, include_live: bool | None = None):
     }
 
 
+# Handle resolve for this module.
 def resolve(organization, capability):
     name = selected_provider(organization, capability)
     return resolve_registered(
@@ -100,6 +105,7 @@ def resolve(organization, capability):
     )
 
 
+# Retrieve resolve registered for the current request or workflow.
 def resolve_registered(
     capability: str,
     name: str,
@@ -152,6 +158,7 @@ for name, region, mode, latency in [
     )
 
 
+# Retrieve load installed plugins for the current request or workflow.
 def load_installed_plugins():
     # Only explicitly installed Python packages are executable. Tenant settings never accept module paths.
     for plugin in entry_points(group="dhmis.providers"):

@@ -48,6 +48,7 @@ from app.platform_identity.models import (
     PlatformOutboxMessage,
     PlatformPasswordResetChallenge,
     PlatformSession,
+    PlatformSupportTicket,
     PlatformUser,
 )
 from app.prescriptions.models import MedicationSafetyRule, Prescription
@@ -150,6 +151,7 @@ __all__ = [
     "PlatformOutboxMessage",
     "PlatformPasswordResetChallenge",
     "PlatformSession",
+    "PlatformSupportTicket",
     "PlatformUser",
     "PlatformRegion",
     "AdapterCustomizationRequest",

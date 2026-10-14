@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, model_validator
 
 
+# Defines the consent evidence model, contract, or value object.
 class ConsentEvidence(BaseModel):
     confirmed: bool = False
     confirmed_by: str = Field(default="", max_length=160)
@@ -9,6 +10,7 @@ class ConsentEvidence(BaseModel):
     document_reference: str = Field(default="", max_length=240)
 
 
+# Defines the media input model, contract, or value object.
 class MediaInput(BaseModel):
     key: str = Field(min_length=1, max_length=100)
     kind: str = Field(pattern="^(hero|provider|gallery|testimonial)$")
@@ -20,6 +22,7 @@ class MediaInput(BaseModel):
     visible: bool = True
 
 
+# Defines the service input model, contract, or value object.
 class ServiceInput(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     catalog_service_id: str | None = Field(default=None, max_length=36)
@@ -31,6 +34,7 @@ class ServiceInput(BaseModel):
     visible: bool = True
     order: int = Field(default=0, ge=0, le=10000)
 
+    # Handle fee for this module.
     @model_validator(mode="after")
     def fee(self):
         if self.fee_mode == "from" and self.fee_cents is None:
@@ -38,6 +42,7 @@ class ServiceInput(BaseModel):
         return self
 
 
+# Defines the dentist input model, contract, or value object.
 class DentistInput(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=160)
@@ -51,6 +56,7 @@ class DentistInput(BaseModel):
     order: int = Field(default=0, ge=0, le=10000)
 
 
+# Defines the location content input model, contract, or value object.
 class LocationContentInput(BaseModel):
     location_id: str = Field(min_length=36, max_length=36)
     name: str = Field(default="", max_length=180)
@@ -63,6 +69,7 @@ class LocationContentInput(BaseModel):
     visible: bool = True
 
 
+# Defines the testimonial input model, contract, or value object.
 class TestimonialInput(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     quote: str = Field(min_length=2, max_length=1000)
@@ -71,6 +78,7 @@ class TestimonialInput(BaseModel):
     visible: bool = True
 
 
+# Defines the cms content input model, contract, or value object.
 class CmsContentInput(BaseModel):
     headline: str = Field(min_length=2, max_length=180)
     introduction: str = Field(default="", max_length=2000)
@@ -87,10 +95,12 @@ class CmsContentInput(BaseModel):
     testimonials: list[TestimonialInput] = Field(default_factory=list, max_length=200)
 
 
+# Defines the applicability input model, contract, or value object.
 class ApplicabilityInput(BaseModel):
     scope: str = Field(default="organization", pattern="^(organization|location)$")
     location_ids: list[str] = Field(default_factory=list, max_length=100)
 
+    # Handle scope locations for this module.
     @model_validator(mode="after")
     def scope_locations(self):
         unique = list(dict.fromkeys(self.location_ids))
@@ -103,12 +113,14 @@ class ApplicabilityInput(BaseModel):
         return self
 
 
+# Defines the draft input model, contract, or value object.
 class DraftInput(BaseModel):
     content: CmsContentInput
     applicability: ApplicabilityInput
     expected_updated_at: str | None = None
 
 
+# Defines the media upload input model, contract, or value object.
 class MediaUploadInput(BaseModel):
     key: str = Field(min_length=1, max_length=100)
     kind: str = Field(pattern="^(hero|provider|gallery|testimonial)$")
@@ -121,6 +133,7 @@ class MediaUploadInput(BaseModel):
     expected_updated_at: str | None = None
 
 
+# Defines the publish input model, contract, or value object.
 class PublishInput(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=100)
     expected_updated_at: str

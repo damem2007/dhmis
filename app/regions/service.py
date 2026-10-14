@@ -26,6 +26,7 @@ REGION_DEFAULTS = {
 }
 
 
+# Validate or enforce ensure region registry before the operation continues.
 async def ensure_region_registry(db, actor_id: str = "region-bootstrap"):
     rows = {row.code: row for row in (await db.scalars(select(PlatformRegion))).all()}
     for code, values in REGION_DEFAULTS.items():
@@ -35,6 +36,7 @@ async def ensure_region_registry(db, actor_id: str = "region-bootstrap"):
     await db.flush()
 
 
+# Handle enabled region for this module.
 async def enabled_region(db, code: str) -> PlatformRegion:
     row = await db.scalar(select(PlatformRegion).where(PlatformRegion.code == code.upper()))
     if row is None:

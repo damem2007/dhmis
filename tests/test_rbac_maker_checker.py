@@ -18,6 +18,7 @@ from app.rbac.workflow import (
 )
 
 
+# Exercise or prepare test role publication maker checker flow for this test module.
 async def test_role_publication_maker_checker_flow(client, tenants):
     tenant = tenants[0]
     async with tenant_session(tenant["org"].schema_name) as db:
@@ -156,6 +157,7 @@ async def test_role_publication_maker_checker_flow(client, tenants):
             await db.delete(assignment)
 
 
+# Exercise or prepare test rejection withdrawal expiry and conflict states for this test module.
 async def test_rejection_withdrawal_expiry_and_conflict_states(client, tenants):
     tenant = tenants[0]
     async with tenant_session(tenant["org"].schema_name) as db:
@@ -177,6 +179,7 @@ async def test_rejection_withdrawal_expiry_and_conflict_states(client, tenants):
                 )
             )
 
+    # Exercise or prepare new request for this test module.
     async def new_request(name: str):
         created = await client.post(
             "/v1/rbac/roles", headers=tenant["headers"], json={"name": name}
@@ -255,6 +258,7 @@ async def test_rejection_withdrawal_expiry_and_conflict_states(client, tenants):
     assert expired_id in {item["id"] for item in listed.json()["items"]}
 
 
+# Exercise or prepare test runtime action is approved before it is applied for this test module.
 async def test_runtime_action_is_approved_before_it_is_applied(client, tenants):
     tenant = tenants[0]
     payload = {
@@ -367,6 +371,7 @@ async def test_runtime_action_is_approved_before_it_is_applied(client, tenants):
         assert applied.runtime_payload["application_result"]["resource_id"] == "refund-runtime-test"
 
 
+# Exercise or prepare test approval policy change is maker checker governed for this test module.
 async def test_approval_policy_change_is_maker_checker_governed(client, tenants):
     tenant = tenants[0]
     async with tenant_session(tenant["org"].schema_name) as db:

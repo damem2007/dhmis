@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the lab case model, contract, or value object.
 class LabCase(Record, Base):
     __tablename__ = "lab_cases"
     __table_args__ = {"schema": "tenant"}
@@ -20,6 +21,7 @@ class LabCase(Record, Base):
     status_history: Mapped[list] = mapped_column(JSON, default=list)
 
 
+# Defines the referral model, contract, or value object.
 class Referral(Record, Base):
     __tablename__ = "referrals"
     __table_args__ = {"schema": "tenant"}

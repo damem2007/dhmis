@@ -9,6 +9,7 @@ from app.notifications.models import OutboxMessage
 from app.organizations.configuration import render_communication_template, tenant_settings
 
 
+# Create or issue issue password reset while applying existing validation and authorization.
 async def issue_password_reset(
     db, user, *, initiated_by: str, reason: str, clinic_name: str = "your clinic"
 ):
@@ -57,6 +58,7 @@ async def issue_password_reset(
     return reset, raw
 
 
+# Apply the revoke staff sessions lifecycle transition and its existing safeguards.
 async def revoke_staff_sessions(db, user, *, actor_id: str):
     sessions = (await db.scalars(select(StaffSession).where(StaffSession.user_id == user.id))).all()
     for session in sessions:

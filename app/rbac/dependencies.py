@@ -16,13 +16,16 @@ from app.platform_identity.service import (
 from app.rbac.runtime import decide_platform, decide_tenant
 
 
+# Internal helper for mfa age minutes.
 def _mfa_age_minutes(authenticated_at: int) -> int | None:
     if not authenticated_at:
         return None
     return max(0, int((time.time() - authenticated_at) // 60))
 
 
+# Handle permit tenant for this module.
 def permit_tenant(permission_key: str, *, workflow_handles_approval: bool = False):
+    # Handle guard for this module.
     async def guard(
         request: Request,
         actor: Actor = Depends(current_actor),
@@ -66,7 +69,9 @@ def permit_tenant(permission_key: str, *, workflow_handles_approval: bool = Fals
     return guard
 
 
+# Handle permit platform for this module.
 def permit_platform(permission_key: str, *, workflow_handles_approval: bool = False):
+    # Handle guard for this module.
     async def guard(
         request: Request,
         actor: PlatformActor = Depends(current_platform),
@@ -109,7 +114,9 @@ def permit_platform(permission_key: str, *, workflow_handles_approval: bool = Fa
     return guard
 
 
+# Handle permit platform or bootstrap for this module.
 def permit_platform_or_bootstrap(permission_key: str, *, workflow_handles_approval: bool = False):
+    # Handle guard for this module.
     async def guard(
         request: Request,
         actor: PlatformActor = Depends(platform_or_bootstrap),

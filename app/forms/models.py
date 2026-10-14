@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the form template model, contract, or value object.
 class FormTemplate(Record, Base):
     __tablename__ = "form_templates"
     __table_args__ = {"schema": "tenant"}
@@ -13,6 +14,7 @@ class FormTemplate(Record, Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+# Defines the form submission model, contract, or value object.
 class FormSubmission(Record, Base):
     __tablename__ = "form_submissions"
     __table_args__ = {"schema": "tenant"}

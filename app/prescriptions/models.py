@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the medication safety rule model, contract, or value object.
 class MedicationSafetyRule(Record, Base):
     __tablename__ = "medication_safety_rules"
     __table_args__ = {"schema": "tenant"}
@@ -16,6 +17,7 @@ class MedicationSafetyRule(Record, Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+# Defines the prescription model, contract, or value object.
 class Prescription(Record, Base):
     __tablename__ = "prescriptions"
     __table_args__ = {"schema": "tenant"}

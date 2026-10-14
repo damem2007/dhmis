@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the message thread model, contract, or value object.
 class MessageThread(Record, Base):
     __tablename__ = "message_threads"
     __table_args__ = {"schema": "tenant"}
@@ -13,6 +14,7 @@ class MessageThread(Record, Base):
     status: Mapped[str] = mapped_column(String(30), default="open")
 
 
+# Defines the message model, contract, or value object.
 class Message(Record, Base):
     __tablename__ = "messages"
     __table_args__ = {"schema": "tenant"}

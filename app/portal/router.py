@@ -12,8 +12,8 @@ from app.core.audit import audit
 from app.core.repository import add, required, serialize
 from app.forms.models import FormSubmission, FormTemplate
 from app.identity.models import StaffUser
-from app.identity.service import role_names_with_module
 from app.identity.security import digest, vault
+from app.identity.service import role_names_with_module
 from app.integrations.contracts import SignatureRequest
 from app.integrations.registry import resolve
 from app.messaging.models import Message, MessageThread
@@ -34,13 +34,14 @@ from app.scheduling.service import book, cancel_booking
 router = APIRouter(prefix="/portal", tags=["Patient portal"])
 
 
+# Handle portal context for this module.
 @router.get("/context")
 async def portal_context(
     actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)
 ):
     revision = await published_revision(db)
     content = revision.content if revision else await default_content(db, actor.organization)
-    locations = (await db.scalars(select(Location).order_by(Location.name))).all()
+    locations = (await db.scalars(select(Location).where(Location.active).order_by(Location.name))).all()
     providers = (
         await db.scalars(
             select(StaffUser).where(
@@ -70,6 +71,7 @@ async def portal_context(
     }
 
 
+# Handle recent activity for this module.
 @router.get("/activity")
 async def recent_activity(
     page: int = Query(1, ge=1),
@@ -261,6 +263,7 @@ async def notifications(actor: PatientActor = Depends(current_patient), db=Depen
     return {"items": items}
 
 
+# Handle profiles for this module.
 @router.get("/profiles")
 async def profiles(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     identifiers = await authorized_patient_ids(db, actor)
@@ -269,6 +272,7 @@ async def profiles(actor: PatientActor = Depends(current_patient), db=Depends(pa
     return [serialize(row) for row in rows]
 
 
+# Handle appointments for this module.
 @router.get("/appointments")
 async def appointments(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     identifiers = await authorized_patient_ids(db, actor)
@@ -283,6 +287,7 @@ async def appointments(actor: PatientActor = Depends(current_patient), db=Depend
     return [serialize(row) for row in rows]
 
 
+# Create or issue create appointment while applying existing validation and authorization.
 @router.post("/appointments", status_code=201)
 async def create_appointment(
     body: Booking, actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)
@@ -293,6 +298,7 @@ async def create_appointment(
     return serialize(await book(db, actor, body))
 
 
+# Handle reschedule appointment for this module.
 @router.put("/appointments/{identifier}")
 async def reschedule_appointment(
     identifier: str,
@@ -307,6 +313,7 @@ async def reschedule_appointment(
     return serialize(await book(db, actor, body, identifier))
 
 
+# Apply the cancel appointment lifecycle transition and its existing safeguards.
 @router.post("/appointments/{identifier}/cancel")
 async def cancel_appointment(
     identifier: str,
@@ -319,6 +326,7 @@ async def cancel_appointment(
     return serialize(await cancel_booking(db, actor, identifier, body.reason))
 
 
+# Handle invoices for this module.
 @router.get("/invoices")
 async def invoices(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     identifiers = await authorized_patient_ids(db, actor)
@@ -329,17 +337,20 @@ async def invoices(actor: PatientActor = Depends(current_patient), db=Depends(pa
     return [serialize(row) for row in rows]
 
 
+# Defines the portal payment model, contract, or value object.
 class PortalPayment(BaseModel):
     amount_cents: int = Field(gt=0)
     idempotency_key: str = Field(min_length=8, max_length=100)
     payment_method_token: str | None = None
 
 
+# Defines the portal plan model, contract, or value object.
 class PortalPlan(BaseModel):
     installments: int = Field(ge=2, le=24)
     first_due: date
 
 
+# Handle pay invoice for this module.
 @router.post("/invoices/{identifier}/payments")
 async def pay_invoice(
     identifier: str,
@@ -360,6 +371,7 @@ async def pay_invoice(
     return serialize(row)
 
 
+# Create or issue create plan while applying existing validation and authorization.
 @router.post("/invoices/{identifier}/payment-plan", status_code=201)
 async def create_plan(
     identifier: str,
@@ -374,6 +386,7 @@ async def create_plan(
     )
 
 
+# Handle statement for this module.
 @router.get("/statements/{patient_id}")
 async def statement(
     patient_id: str,
@@ -399,6 +412,7 @@ async def statement(
     return {"patient_id": patient_id, "balance_cents": balance, "entries": history, "payment_plans": [serialize(x) for x in plans], "invoice_count": len(invoices)}
 
 
+# Handle forms for this module.
 @router.get("/forms")
 async def forms(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     templates = (await db.scalars(select(FormTemplate).where(FormTemplate.active))).all()
@@ -409,11 +423,13 @@ async def forms(actor: PatientActor = Depends(current_patient), db=Depends(patie
     return {"templates": [serialize(row) for row in templates], "submissions": [serialize(row) for row in submissions]}
 
 
+# Defines the form response model, contract, or value object.
 class FormResponse(BaseModel):
     patient_id: str
     responses: dict[str, str | bool | int | float | None]
 
 
+# Create or issue submit form while applying existing validation and authorization.
 @router.post("/forms/{template_id}", status_code=201)
 async def submit_form(
     template_id: str,
@@ -443,6 +459,7 @@ async def submit_form(
     return serialize(row)
 
 
+# Handle consents for this module.
 @router.get("/consents")
 async def consents(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     identifiers = await authorized_patient_ids(db, actor)
@@ -457,6 +474,7 @@ async def consents(actor: PatientActor = Depends(current_patient), db=Depends(pa
     return [serialize(row) for row in rows]
 
 
+# Handle sign consent for this module.
 @router.post("/consents/{identifier}/sign")
 async def sign_consent(
     identifier: str,
@@ -498,6 +516,7 @@ async def sign_consent(
     return serialize(row)
 
 
+# Handle threads for this module.
 @router.get("/threads")
 async def threads(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     identifiers = await authorized_patient_ids(db, actor)
@@ -509,12 +528,52 @@ async def threads(actor: PatientActor = Depends(current_patient), db=Depends(pat
     return [serialize(row) for row in rows]
 
 
+# Handle thread page for this module.
+@router.get("/threads/page")
+async def thread_page(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=3, ge=1, le=200),
+    actor: PatientActor = Depends(current_patient),
+    db=Depends(patient_db_session),
+):
+    identifiers = await authorized_patient_ids(db, actor)
+    open_rows = (
+        await db.scalars(
+            select(MessageThread)
+            .where(MessageThread.patient_id.in_(identifiers), MessageThread.status != "closed")
+            .order_by(MessageThread.updated_at.desc(), MessageThread.id.desc())
+        )
+    ).all()
+    history_query = select(MessageThread).where(MessageThread.patient_id.in_(identifiers), MessageThread.status == "closed")
+    history_total = await db.scalar(select(func.count()).select_from(history_query.subquery())) or 0
+    history_rows = (
+        await db.scalars(
+            history_query.order_by(MessageThread.updated_at.desc(), MessageThread.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    audit(db, actor.user_id, "portal.read", "message_threads", page=page, page_size=page_size)
+    return {
+        "open": [serialize(row) for row in open_rows],
+        "history": {
+            "items": [serialize(row) for row in history_rows],
+            "page": page,
+            "page_size": page_size,
+            "total": history_total,
+            "pages": (history_total + page_size - 1) // page_size,
+        },
+    }
+
+
+# Defines the new thread model, contract, or value object.
 class NewThread(BaseModel):
     patient_id: str
     subject: str = Field(min_length=3, max_length=180)
     body: str = Field(min_length=1, max_length=8000)
 
 
+# Create or issue create thread while applying existing validation and authorization.
 @router.post("/threads", status_code=201)
 async def create_thread(
     body: NewThread,
@@ -564,10 +623,12 @@ async def create_thread(
     return serialize(thread)
 
 
+# Defines the reply model, contract, or value object.
 class Reply(BaseModel):
     body: str = Field(min_length=1, max_length=8000)
 
 
+# Handle thread for this module.
 @router.get("/threads/{identifier}")
 async def thread(
     identifier: str,
@@ -581,6 +642,7 @@ async def thread(
     return {"thread": serialize(thread), "messages": [{**serialize(row), "body": vault().open(row.body_cipher), "body_cipher": None} for row in rows]}
 
 
+# Handle reply for this module.
 @router.post("/threads/{identifier}/reply", status_code=201)
 async def reply(
     identifier: str,
@@ -590,6 +652,8 @@ async def reply(
 ):
     thread = await required(db, MessageThread, identifier)
     await require_patient_access(db, actor, thread.patient_id)
+    if thread.status == "closed":
+        raise HTTPException(409, "Closed conversations cannot receive replies")
     row = await add(
         db,
         Message,

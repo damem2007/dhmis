@@ -11,6 +11,7 @@ branch_labels = None
 depends_on = None
 
 
+# Run the upgrade entry point for this module.
 def upgrade():
     schema = context.config.attributes["schema"]
     snapshot = json.loads((Path(__file__).parent / "0001_schema.json").read_text())
@@ -26,5 +27,6 @@ def upgrade():
             )
 
 
+# Run the downgrade entry point for this module.
 def downgrade():
     raise RuntimeError("Destructive downgrade is not supported. Use a reviewed forward migration.")

@@ -18,6 +18,7 @@ from app.integrations.contracts import GeocodingProvider, IntegrationFailure
 class NominatimGeocodingProvider:
     """OpenStreetMap Nominatim adapter behind the geocoding contract."""
 
+    # Initialize the instance with its required state.
     def __init__(self, context):
         self.options = context.options
         self.endpoint = str(
@@ -27,6 +28,7 @@ class NominatimGeocodingProvider:
             self.options.get("user_agent", "DHMIS platform admin location search/1.0")
         )
 
+    # Handle search for this module.
     async def search(self, query: str, region: str, limit: int = 5) -> list[dict]:
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
@@ -72,6 +74,7 @@ class NominatimGeocodingProvider:
 class TomTomGeocodingProvider:
     """TomTom Search API adapter for production address autocomplete."""
 
+    # Initialize the instance with its required state.
     def __init__(self, context):
         self.options = context.options
         self.endpoint = str(
@@ -82,6 +85,7 @@ class TomTomGeocodingProvider:
             self.options.get("user_agent", "DHMIS platform address search/1.0")
         )
 
+    # Handle search for this module.
     async def search(self, query: str, region: str, limit: int = 5) -> list[dict]:
         if not self.api_key:
             raise IntegrationFailure("TomTom geocoding provider is missing api_key")
@@ -147,6 +151,7 @@ class TomTomGeocodingProvider:
 class PhotonGeocodingProvider:
     """Photon adapter used as a provider-configured geocoding fallback."""
 
+    # Initialize the instance with its required state.
     def __init__(self, context):
         self.options = context.options
         self.endpoint = str(
@@ -156,6 +161,7 @@ class PhotonGeocodingProvider:
             self.options.get("user_agent", "DHMIS platform admin location search/1.0")
         )
 
+    # Handle search for this module.
     async def search(self, query: str, region: str, limit: int = 5) -> list[dict]:
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
@@ -243,6 +249,7 @@ class PhotonGeocodingProvider:
 class OverpassAddressProvider:
     """OpenStreetMap address-index adapter for expanding a selected street."""
 
+    # Initialize the instance with its required state.
     def __init__(self, context):
         self.options = context.options
         self.endpoint = str(
@@ -254,6 +261,7 @@ class OverpassAddressProvider:
             self.options.get("user_agent", "DHMIS platform admin location search/1.0")
         )
 
+    # Handle search for this module.
     async def search(self, query: str, region: str, limit: int = 5) -> list[dict]:
         street = query.strip()
         if not street:
@@ -331,6 +339,7 @@ class PostalAwareGeocodingProvider:
 
     _CANADIAN_POSTAL = re.compile(r"^[A-Z]\d[A-Z]\s?\d[A-Z]\d$", re.IGNORECASE)
 
+    # Initialize the instance with its required state.
     def __init__(self, context):
         # Keep both services behind this registered provider.  Endpoints remain
         # options so deployments can replace either provider without code changes.
@@ -355,6 +364,7 @@ class PostalAwareGeocodingProvider:
         self.fallback = PhotonGeocodingProvider(fallback_context)
         self.addresses = OverpassAddressProvider(fallback_context)
 
+    # Retrieve search addresses for the current request or workflow.
     async def search_addresses(self, query: str, region: str, limit: int = 5) -> list[dict]:
         try:
             results = await self.addresses.search(query, region, limit)
@@ -405,6 +415,7 @@ class PostalAwareGeocodingProvider:
             )
         return enriched
 
+    # Handle search for this module.
     async def search(self, query: str, region: str, limit: int = 5) -> list[dict]:
         try:
             primary_results = await self.primary.search(query, region, limit)
@@ -494,6 +505,7 @@ class PostalAwareGeocodingProvider:
             collapsed.append(result)
         return collapsed
 
+    # Internal helper for merge.
     @staticmethod
     def _merge(primary: list[dict], secondary: list[dict], limit: int) -> list[dict]:
         merged = list(primary)

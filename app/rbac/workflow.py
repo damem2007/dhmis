@@ -31,6 +31,7 @@ from app.rbac.policy import (
 )
 
 
+# Handle approval policy from settings for this module.
 def approval_policy_from_settings(values: dict | None) -> ApprovalPolicy:
     settings = {**default_approval_policy(), **(values or {})}
     settings["tenant_eligible_roles"] = tuple(settings["tenant_eligible_roles"])
@@ -38,6 +39,7 @@ def approval_policy_from_settings(values: dict | None) -> ApprovalPolicy:
     return ApprovalPolicy(**settings)
 
 
+# Retrieve load approval policy for the current request or workflow.
 async def load_approval_policy(db, model) -> ApprovalPolicy:
     row = await db.get(model, APPROVAL_POLICY_ID)
     if row is None:
@@ -45,6 +47,7 @@ async def load_approval_policy(db, model) -> ApprovalPolicy:
     return approval_policy_from_settings(row.settings)
 
 
+# Handle grant json for this module.
 def grant_json(grant: Grant | None):
     if grant is None:
         return None
@@ -66,6 +69,7 @@ def grant_json(grant: Grant | None):
     }
 
 
+# Handle grant from json for this module.
 def grant_from_json(values: dict | None):
     if values is None:
         return None
@@ -78,6 +82,7 @@ def grant_from_json(values: dict | None):
     )
 
 
+# Handle expire requests for this module.
 async def expire_requests(db, request_model) -> int:
     now = datetime.now(UTC)
     rows = (
@@ -95,6 +100,7 @@ async def expire_requests(db, request_model) -> int:
     return len(rows)
 
 
+# Create or issue create runtime action request while applying existing validation and authorization.
 async def create_runtime_action_request(
     db,
     *,
@@ -165,6 +171,7 @@ async def create_runtime_action_request(
     return row, True
 
 
+# Validate or enforce validate governance patch before the operation continues.
 def validate_governance_patch(kind: str, patch: dict):
     if kind == "approval-policy":
         approval_policy_from_settings(patch.get("settings"))
@@ -196,6 +203,7 @@ def validate_governance_patch(kind: str, patch: dict):
         priorities.add(priority)
 
 
+# Create or issue create governance change request while applying existing validation and authorization.
 async def create_governance_change_request(
     db,
     *,
@@ -242,6 +250,7 @@ async def create_governance_change_request(
     return row, True
 
 
+# Handle authorize runtime action for this module.
 async def authorize_runtime_action(
     db,
     *,
@@ -272,6 +281,7 @@ async def authorize_runtime_action(
     return row
 
 
+# Handle complete runtime action for this module.
 async def complete_runtime_action(row, result: dict | None = None):
     row.status = RequestStatus.APPLIED.value
     row.runtime_payload = {
@@ -282,6 +292,7 @@ async def complete_runtime_action(row, result: dict | None = None):
     return row
 
 
+# Handle apply governance request for this module.
 async def apply_governance_request(
     db,
     *,
@@ -341,6 +352,7 @@ async def apply_governance_request(
     return request_row
 
 
+# Create or issue request payload while applying existing validation and authorization.
 async def request_payload(db, row, decision_model):
     decisions = (
         await db.scalars(
@@ -381,6 +393,7 @@ async def request_payload(db, row, decision_model):
     }
 
 
+# Internal helper for policy request.
 def _policy_request(row, decisions, domain: Domain) -> ChangeRequest:
     patches = tuple(
         ChangePatch(
@@ -416,6 +429,7 @@ def _policy_request(row, decisions, domain: Domain) -> ChangeRequest:
     )
 
 
+# Create or issue create role change request while applying existing validation and authorization.
 async def create_role_change_request(
     db,
     *,
@@ -528,6 +542,7 @@ async def create_role_change_request(
     return row, {"cleared_dependents": cleared, "conflicts": conflicts}
 
 
+# Handle apply role request for this module.
 async def apply_role_request(
     db,
     request_row,
@@ -606,6 +621,7 @@ async def apply_role_request(
     return True
 
 
+# Handle decide request for this module.
 async def decide_request(
     db,
     *,
@@ -708,6 +724,7 @@ async def decide_request(
     return request_row
 
 
+# Handle withdraw request for this module.
 async def withdraw_request(db, row, actor_id: str):
     if row.maker_id != actor_id:
         raise HTTPException(403, "Only the maker can withdraw this request")

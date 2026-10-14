@@ -29,6 +29,7 @@ router = APIRouter(prefix="/auth", tags=["Staff identity"])
 DUMMY_HASH = hash_password(secrets.token_urlsafe(32))
 
 
+# Defines the login model, contract, or value object.
 class Login(BaseModel):
     organization_id: str | None = Field(default=None, min_length=36, max_length=36)
     tenant_slug: str | None = Field(default=None, min_length=3, max_length=80)
@@ -36,26 +37,31 @@ class Login(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+# Defines the challenge input model, contract, or value object.
 class ChallengeInput(BaseModel):
     organization_id: str | None = None
     tenant_slug: str | None = None
     challenge_token: str = Field(min_length=20, max_length=200)
 
 
+# Defines the code input model, contract, or value object.
 class CodeInput(ChallengeInput):
     code: str = Field(pattern=r"^\d{6}$")
 
 
+# Defines the profile update model, contract, or value object.
 class ProfileUpdate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     photo_url: str = Field(default="", max_length=500)
 
 
+# Defines the password change model, contract, or value object.
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=12, max_length=128)
 
 
+# Defines the password reset complete model, contract, or value object.
 class PasswordResetComplete(BaseModel):
     organization_id: str | None = None
     tenant_slug: str | None = None
@@ -64,6 +70,7 @@ class PasswordResetComplete(BaseModel):
 
 
 
+# Handle throttle for this module.
 async def throttle(key, limit: int | None = None, seconds: int | None = None):
     defaults = get_bo_throttle_args()
     limit = limit if limit is not None else defaults.limit
@@ -84,6 +91,7 @@ async def throttle(key, limit: int | None = None, seconds: int | None = None):
     return allowed
 
 
+# Handle organization for this module.
 async def organization(identifier=None, tenant_slug=None):
     try:
         return await organization_from_login(identifier, tenant_slug)
@@ -93,6 +101,7 @@ async def organization(identifier=None, tenant_slug=None):
         raise HTTPException(401, "Invalid credentials") from None
 
 
+# Handle challenge user for this module.
 async def challenge_user(db, body):
     challenge = await db.scalar(
         select(AuthChallenge)
@@ -107,6 +116,7 @@ async def challenge_user(db, body):
     return challenge, user
 
 
+# Handle login for this module.
 @router.post("/staff/login")
 async def login(body: Login, request: Request):
     address = request.client.host if request.client else "unknown"
@@ -150,6 +160,7 @@ async def login(body: Login, request: Request):
     }
 
 
+# Handle setup for this module.
 @router.post("/mfa/setup")
 async def setup(body: ChallengeInput):
     org = await organization(body.organization_id, body.tenant_slug)
@@ -174,6 +185,7 @@ async def setup(body: ChallengeInput):
         }
 
 
+# Handle verify for this module.
 @router.post("/mfa/verify")
 async def verify(body: CodeInput):
     org = await organization(body.organization_id, body.tenant_slug)
@@ -198,6 +210,7 @@ async def verify(body: CodeInput):
     return {"access_token": access, "token_type": "bearer", "expires_in": settings().staff_session_ttl_seconds}
 
 
+# Handle logout for this module.
 @router.post("/logout")
 async def logout(db=Depends(db_session), actor: Actor = Depends(current_actor)):
     session = await db.get(StaffSession, actor.session_id)
@@ -206,6 +219,7 @@ async def logout(db=Depends(db_session), actor: Actor = Depends(current_actor)):
     return {"revoked": True}
 
 
+# Handle me for this module.
 @router.get("/me")
 async def me(actor: Actor = Depends(current_actor)):
     from app.identity.service import ROLE_PERMISSIONS
@@ -221,7 +235,11 @@ async def me(actor: Actor = Depends(current_actor)):
         "organization_slug": actor.organization.slug,
         "environment": settings().environment,
         "mfa_enabled": True,
-        "permissions": sorted(ROLE_PERMISSIONS.get(actor.role, set())),
+        # Include legacy module aliases and canonical RBAC module roots so
+        # custom roles can render the correct navigation without relying on a
+        # hard-coded role name. The API guards still enforce action-level
+        # permissions for every request.
+        "permissions": sorted(set(ROLE_PERMISSIONS.get(actor.role, set())) | set(actor.modules)),
         "branding": actor.settings.branding,
         "logo_url": actor.settings.logo_url,
         "photo_url": actor.photo_url,
@@ -229,6 +247,7 @@ async def me(actor: Actor = Depends(current_actor)):
     }
 
 
+# Update update profile while preserving existing validation and audit behavior.
 @router.put("/profile")
 async def update_profile(
     body: ProfileUpdate,
@@ -243,6 +262,7 @@ async def update_profile(
     return {"name": user.name, "photo_url": user.photo_url}
 
 
+# Update change password while preserving existing validation and audit behavior.
 @router.post("/password/change")
 async def change_password(
     body: PasswordChange,
@@ -262,6 +282,7 @@ async def change_password(
     return {"status": "changed", "reauthentication_required": True}
 
 
+# Handle complete password reset for this module.
 @router.post("/password-reset/complete")
 async def complete_password_reset(body: PasswordResetComplete):
     if not await throttle("password-reset:" + digest(body.token)):

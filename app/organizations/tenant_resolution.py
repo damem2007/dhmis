@@ -18,6 +18,7 @@ PLATFORM_HOST_SUFFIX = ".dhmis.local"
 PLATFORM_HOST_LABELS = {"admin", "api", "platform", "www"}
 
 
+# Handle normalize slug for this module.
 def normalize_slug(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
     if not 3 <= len(slug) <= 80 or slug in RESERVED_SLUGS:
@@ -25,6 +26,7 @@ def normalize_slug(value: str) -> str:
     return slug
 
 
+# Handle normalize hostname for this module.
 def normalize_hostname(value: str) -> str:
     hostname = value.strip().lower().split(":", 1)[0].rstrip(".")
     if not hostname or not re.fullmatch(r"[a-z0-9.-]+", hostname):
@@ -47,6 +49,7 @@ def platform_hostname_slug(hostname: str) -> tuple[str, str | None] | None:
     return None
 
 
+# Defines the tenant resolution model, contract, or value object.
 @dataclass
 class TenantResolution:
     organization: Organization
@@ -55,12 +58,14 @@ class TenantResolution:
     domain: str | None = None
 
 
+# Validate or enforce ensure surface before the operation continues.
 def ensure_surface(organization: Organization, surface: str | None):
     feature = SURFACE_FEATURE.get(surface or "")
     if feature and not getattr(organization, feature):
         raise HTTPException(404, "Clinic surface is not enabled")
 
 
+# Retrieve resolve organization for the current request or workflow.
 async def resolve_organization(
     *,
     slug: str | None = None,
@@ -128,6 +133,7 @@ async def resolve_organization(
     return resolution
 
 
+# Handle organization from login for this module.
 async def organization_from_login(
     organization_id: str | None, tenant_slug: str | None
 ) -> Organization:
@@ -141,12 +147,14 @@ async def organization_from_login(
     raise HTTPException(422, "Tenant context is required")
 
 
+# Validate or enforce validate request tenant before the operation continues.
 async def validate_request_tenant(request: Request, organization: Organization):
     slug = request.headers.get("X-DHMIS-Tenant", "").strip()
     if slug and slug != organization.slug:
         raise HTTPException(403, "Tenant context mismatch")
 
 
+# Handle safe metadata for this module.
 async def safe_metadata(resolution: TenantResolution):
     organization = resolution.organization
     async with organization_session(organization) as db:

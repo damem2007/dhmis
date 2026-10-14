@@ -22,15 +22,18 @@ REQUIRED_PREOP = {
 }
 
 
+# Defines the admission input model, contract, or value object.
 class AdmissionInput(BaseModel):
     encounter_id: str
     procedure_name: str = Field(min_length=3, max_length=180)
 
 
+# Defines the pre op input model, contract, or value object.
 class PreOpInput(BaseModel):
     checklist: dict[str, bool]
 
 
+# Defines the anesthesia input model, contract, or value object.
 class AnesthesiaInput(BaseModel):
     recorded_at: datetime | None = None
     agent: str = Field(min_length=2, max_length=160)
@@ -40,14 +43,17 @@ class AnesthesiaInput(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+# Defines the recovery input model, contract, or value object.
 class RecoveryInput(BaseModel):
     recovery_notes: str = Field(min_length=10, max_length=8000)
 
 
+# Defines the discharge input model, contract, or value object.
 class DischargeInput(BaseModel):
     discharge_summary: str = Field(min_length=10, max_length=8000)
 
 
+# Handle admissions for this module.
 @router.get("/patient/{patient_id}")
 async def admissions(
     patient_id: str,
@@ -65,6 +71,7 @@ async def admissions(
     return [serialize(row) for row in rows]
 
 
+# Handle admit for this module.
 @router.post("/admissions", status_code=201)
 async def admit(
     body: AdmissionInput,
@@ -97,6 +104,7 @@ async def admit(
     return serialize(row)
 
 
+# Handle preop for this module.
 @router.put("/admissions/{identifier}/preop")
 async def preop(
     identifier: str,
@@ -116,6 +124,7 @@ async def preop(
     return serialize(row)
 
 
+# Handle start for this module.
 @router.post("/admissions/{identifier}/start")
 async def start(
     identifier: str,
@@ -131,6 +140,7 @@ async def start(
     return serialize(row)
 
 
+# Handle anesthesia for this module.
 @router.post("/admissions/{identifier}/anesthesia")
 async def anesthesia(
     identifier: str,
@@ -155,6 +165,7 @@ async def anesthesia(
     return serialize(row)
 
 
+# Handle recovery for this module.
 @router.put("/admissions/{identifier}/recovery")
 async def recovery(
     identifier: str,
@@ -172,6 +183,7 @@ async def recovery(
     return serialize(row)
 
 
+# Handle discharge for this module.
 @router.post("/admissions/{identifier}/discharge")
 async def discharge(
     identifier: str,

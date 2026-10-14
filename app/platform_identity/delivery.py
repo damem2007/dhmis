@@ -17,6 +17,7 @@ from app.platform_identity.service import platform_audit
 DELIVERED_STATES = {"simulated", "sent", "delivered", "accepted"}
 
 
+# Defines the platform provider context model, contract, or value object.
 @dataclass
 class PlatformProviderContext:
     id: str = "dhmis-platform"
@@ -24,11 +25,40 @@ class PlatformProviderContext:
     _effective_adapters: dict[str, str] | None = None
 
 
+def enqueue_platform_notification(
+    db,
+    *,
+    kind: str,
+    reference_id: str,
+    actor_id: str,
+    payload: dict,
+) -> PlatformOutboxMessage:
+    """Persist an in-app platform notification in the shared control-plane feed.
+
+    These rows intentionally stay in the pending state so the notification
+    center can treat them as unread. The platform delivery worker skips
+    ``in_app`` rows; they are read from the control-plane feed rather than
+    delivered through an email provider.
+    """
+    row = PlatformOutboxMessage(
+        kind=kind,
+        payload={"channel": "in_app", **payload},
+        status="pending",
+        idempotency_key=f"notification:{kind}:{reference_id}",
+        created_by=actor_id,
+        updated_by=actor_id,
+    )
+    db.add(row)
+    return row
+
+
+# Handle platform action url for this module.
 def platform_action_url(action: str, token: str) -> str:
     base = settings().platform_public_url.rstrip("/")
     return f"{base}/admin/?{action}={quote(token, safe='')}"
 
 
+# Handle enqueue platform email for this module.
 async def enqueue_platform_email(
     db,
     *,
@@ -105,6 +135,7 @@ async def enqueue_platform_email(
     return row
 
 
+# Handle dispatch platform outbox for this module.
 async def dispatch_platform_outbox(db, now: datetime | None = None) -> dict[str, int]:
     now = now or datetime.now(UTC)
     rows = (
@@ -130,6 +161,10 @@ async def dispatch_platform_outbox(db, now: datetime | None = None) -> dict[str,
     context = PlatformProviderContext(_effective_adapters=adapters)
     delivered = failed = 0
     for row in rows:
+        if isinstance(row.payload, dict) and row.payload.get("channel") == "in_app":
+            # In-app notifications are consumed by /platform/notifications;
+            # they must never be sent to an email provider.
+            continue
         row.attempts += 1
         row.updated_by = "platform-delivery-worker"
         try:
@@ -175,6 +210,7 @@ async def dispatch_platform_outbox(db, now: datetime | None = None) -> dict[str,
     return {"delivered": delivered, "failed": failed}
 
 
+# Handle platform tick for this module.
 async def platform_tick(context):
     async with control_session() as db:
         return await dispatch_platform_outbox(db)

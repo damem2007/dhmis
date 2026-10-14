@@ -14,6 +14,7 @@ from app.organizations.provisioning import (
 from app.organizations.seed import DEMO_ORG_ID, seed
 
 
+# Run the main entry point for this module.
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(

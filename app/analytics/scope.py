@@ -4,6 +4,7 @@ from fastapi import HTTPException
 
 from app.identity.service import ROLE_DEFINITIONS, ROLE_PERMISSIONS
 
+# Internal helper for profile.
 def _profile(definition: dict) -> str:
     modules = set(definition.get("modules", []))
     if definition.get("organization_scope") and {"patients", "billing", "prescriptions"} <= modules:
@@ -34,6 +35,7 @@ def _profile(definition: dict) -> str:
 ROLE_PROFILE = {name: _profile(definition) for name, definition in ROLE_DEFINITIONS.items()}
 
 
+# Defines the analytics scope model, contract, or value object.
 @dataclass(frozen=True)
 class AnalyticsScope:
     profile: str
@@ -43,6 +45,7 @@ class AnalyticsScope:
     can_export: bool
 
 
+# Retrieve resolve scope for the current request or workflow.
 def resolve_scope(actor, location_id: str | None = None, provider_id: str | None = None):
     profile = ROLE_PROFILE.get(actor.role)
     if profile is None:

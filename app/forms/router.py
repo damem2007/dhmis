@@ -11,18 +11,21 @@ from app.patients.models import Patient
 router = APIRouter(prefix="/forms", tags=["Digital forms"])
 
 
+# Defines the template input model, contract, or value object.
 class TemplateInput(BaseModel):
     title: str = Field(min_length=2, max_length=180)
     version: str = Field(min_length=1, max_length=30)
     fields: list[dict]
 
 
+# Handle templates for this module.
 @router.get("/templates")
 async def templates(db=Depends(db_session), actor=Depends(permit("consents"))):
     rows = (await db.scalars(select(FormTemplate).order_by(FormTemplate.title, FormTemplate.version))).all()
     return [serialize(row) for row in rows]
 
 
+# Create or issue create template while applying existing validation and authorization.
 @router.post("/templates", status_code=201)
 async def create_template(
     body: TemplateInput, db=Depends(db_session), actor=Depends(permit("settings"))
@@ -37,6 +40,7 @@ async def create_template(
     return serialize(row)
 
 
+# Handle submissions for this module.
 @router.get("/submissions/{patient_id}")
 async def submissions(
     patient_id: str, db=Depends(db_session), actor=Depends(permit("consents"))

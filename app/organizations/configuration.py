@@ -70,6 +70,7 @@ DEFAULT_COMMUNICATION_TEMPLATES = {
 LEGACY_STAFF_INVITATION_BODY = "Hi {{recipient_name}}, use this secure link to accept your staff invitation: {{invitation_link}}"
 
 
+# Handle render communication template for this module.
 def render_communication_template(template: dict, values: dict[str, str]) -> tuple[str, str]:
     subject = template.get("subject", "")
     body = template.get("body", "")
@@ -79,6 +80,7 @@ def render_communication_template(template: dict, values: dict[str, str]) -> tup
     return subject, body
 
 
+# Handle platform configuration for this module.
 async def platform_configuration(db) -> PlatformConfiguration:
     row = await db.get(PlatformConfiguration, PLATFORM_SETTINGS_ID)
     if row is None:
@@ -107,6 +109,7 @@ async def platform_configuration(db) -> PlatformConfiguration:
     return row
 
 
+# Handle tenant settings for this module.
 async def tenant_settings(db) -> TenantSettings:
     row = await db.get(TenantSettings, SETTINGS_ID)
     if row is None:
@@ -173,6 +176,7 @@ async def backfill_legacy_configuration(organization: Organization) -> TenantSet
         return target
 
 
+# Update configure tenant while preserving existing validation and audit behavior.
 async def configure_tenant(
     db,
     *,

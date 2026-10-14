@@ -14,6 +14,7 @@ branch_labels = None
 depends_on = None
 
 
+# Run the upgrade entry point for this module.
 def upgrade():
     schema = context.config.attributes["schema"]
     if schema == "dhmis_control":
@@ -22,6 +23,7 @@ def upgrade():
     op.add_column("staff_users", sa.Column("archived_at", sa.DateTime(timezone=True), nullable=True), schema=schema)
 
 
+# Run the downgrade entry point for this module.
 def downgrade():
     schema = context.config.attributes["schema"]
     if schema == "dhmis_control":

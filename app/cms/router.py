@@ -59,6 +59,7 @@ from app.scheduling.service import book
 router = APIRouter(tags=["Front Office CMS"])
 
 
+# Defines the content input model, contract, or value object.
 class ContentInput(BaseModel):
     headline: str = Field(min_length=2, max_length=180)
     introduction: str = Field(min_length=2, max_length=2000)
@@ -67,11 +68,13 @@ class ContentInput(BaseModel):
     logo_url: str = Field(default="", max_length=500)
 
 
+# Handle cms for this module.
 @router.get("/cms")
 async def cms(db=Depends(db_session), actor=Depends(permit("settings"))):
     return (await tenant_settings(db)).public_content
 
 
+# Update update cms while preserving existing validation and audit behavior.
 @router.put("/cms")
 async def update_cms(
     body: ContentInput, db=Depends(db_session), actor=Depends(permit("settings"))
@@ -81,6 +84,7 @@ async def update_cms(
     return body.model_dump()
 
 
+# Handle revisions for this module.
 @router.get("/cms/revisions")
 async def revisions(db=Depends(db_session), actor=Depends(permit("settings"))):
     rows = (
@@ -91,6 +95,7 @@ async def revisions(db=Depends(db_session), actor=Depends(permit("settings"))):
     return [revision_payload(row) for row in rows]
 
 
+# Handle draft for this module.
 @router.get("/cms/revisions/draft")
 async def draft(db=Depends(db_session), actor=Depends(permit("settings"))):
     row = await ensure_draft(db, actor.organization, actor.user_id)
@@ -98,6 +103,7 @@ async def draft(db=Depends(db_session), actor=Depends(permit("settings"))):
     return revision_payload(row)
 
 
+# Update save draft while preserving existing validation and audit behavior.
 @router.put("/cms/revisions/{identifier}")
 async def save_draft(
     identifier: str,
@@ -132,6 +138,7 @@ async def save_draft(
     return revision_payload(row)
 
 
+# Handle upload media for this module.
 @router.post("/cms/revisions/{identifier}/media")
 async def upload_media(
     identifier: str,
@@ -196,6 +203,7 @@ async def upload_media(
     return revision_payload(row)
 
 
+# Handle draft media for this module.
 @router.get("/cms/revisions/{identifier}/media/{asset_key}")
 async def draft_media(
     identifier: str,
@@ -215,6 +223,7 @@ async def draft_media(
     return Response(content=asset.content, media_type=asset.mime_type)
 
 
+# Handle publication preflight for this module.
 @router.post("/cms/revisions/{identifier}/preflight")
 async def publication_preflight(
     identifier: str,
@@ -244,6 +253,7 @@ async def publication_preflight(
     return {**result, "revision_updated_at": row.updated_at}
 
 
+# Handle preview token for this module.
 @router.post("/cms/revisions/{identifier}/preview-token")
 async def preview_token(
     identifier: str,
@@ -271,6 +281,7 @@ async def preview_token(
     return {"token": token, "expires_in": 600, "path": f"/v1/cms/preview/{token}"}
 
 
+# Handle publish for this module.
 @router.post("/cms/revisions/{identifier}/publish")
 async def publish(
     identifier: str,
@@ -398,6 +409,7 @@ async def publish(
     return revision_payload(row)
 
 
+# Handle rollback publication for this module.
 @router.post("/cms/revisions/{identifier}/rollback")
 async def rollback_publication(
     identifier: str,
@@ -464,6 +476,7 @@ async def rollback_publication(
     return revision_payload(restored)
 
 
+# Handle decode preview token for this module.
 def decode_preview_token(token: str) -> dict:
     try:
         return jwt.decode(
@@ -478,6 +491,7 @@ def decode_preview_token(token: str) -> dict:
         raise HTTPException(401, "Preview link is invalid or expired") from None
 
 
+# Handle preview context for this module.
 async def preview_context(token: str):
     payload = decode_preview_token(token)
     async with control_session() as control:
@@ -493,6 +507,7 @@ async def preview_context(token: str):
     return organization, row
 
 
+# Handle preview for this module.
 @router.get("/cms/preview/{token}")
 async def preview(token: str):
     organization, row = await preview_context(token)
@@ -506,6 +521,7 @@ async def preview(token: str):
     return result
 
 
+# Handle preview media for this module.
 @router.get("/cms/preview/{token}/media/{asset_key}")
 async def preview_media(token: str, asset_key: str):
     organization, row = await preview_context(token)
@@ -522,18 +538,21 @@ async def preview_media(token: str, asset_key: str):
         return Response(content=asset.content, media_type=asset.mime_type)
 
 
+# Handle public organization for this module.
 async def public_organization(identifier: str, surface: str):
     return (
         await resolve_organization(organization_id=identifier, surface=surface)
     ).organization
 
 
+# Handle storefront for this module.
 @router.get("/public/organizations/{organization_id}")
 async def storefront(organization_id: str, location_id: str | None = Query(default=None)):
     organization = await public_organization(organization_id, "public")
     return await storefront_data(organization, location_id=location_id)
 
 
+# Handle storefront data for this module.
 async def storefront_data(
     organization,
     override_content: dict | None = None,
@@ -566,6 +585,7 @@ async def storefront_data(
             row.id: row
             for row in (await db.scalars(select(Service))).all()
         }
+        # Handle catalog service for for this module.
         def catalog_service_for(item: dict):
             return catalog_services.get(item.get("catalog_service_id") or item.get("id"))
         site_service_rows = []
@@ -586,7 +606,7 @@ async def storefront_data(
             )
         public_site_content = dict(content)
         public_site_content["services"] = site_service_rows
-        locations = (await db.scalars(select(Location).order_by(Location.name))).all()
+        locations = (await db.scalars(select(Location).where(Location.active).order_by(Location.name))).all()
         # Clinical roles are not enough to make an account patient-facing.
         # Administrators and support users can be assigned to a location while
         # remaining excluded from booking and the public care team.
@@ -659,6 +679,7 @@ async def storefront_data(
     }
 
 
+# Handle availability for this module.
 @router.get("/public/organizations/{organization_id}/availability")
 async def availability(
     organization_id: str,
@@ -708,6 +729,7 @@ async def availability(
     return slots
 
 
+# Defines the public booking model, contract, or value object.
 class PublicBooking(BaseModel):
     first_name: str = Field(min_length=1, max_length=80)
     last_name: str = Field(min_length=1, max_length=80)
@@ -722,6 +744,7 @@ class PublicBooking(BaseModel):
     procedure: str = Field(min_length=1, max_length=180)
 
 
+# Handle public booking for this module.
 @router.post("/public/organizations/{organization_id}/appointments", status_code=201)
 async def public_booking(organization_id: str, body: PublicBooking, request: Request):
     address = request.client.host if request.client else "unknown"
@@ -780,12 +803,14 @@ async def public_booking(organization_id: str, body: PublicBooking, request: Req
         return {"appointment_id": appointment.id, "status": appointment.status}
 
 
+# Handle storefront by slug for this module.
 @router.get("/public/tenants/{tenant_slug}")
 async def storefront_by_slug(tenant_slug: str, location_id: str | None = Query(default=None)):
     resolution = await resolve_organization(slug=tenant_slug, surface="public")
     return await storefront_data(resolution.organization, location_id=location_id)
 
 
+# Handle published media for this module.
 @router.get("/public/tenants/{tenant_slug}/media/{asset_key}")
 async def published_media(
     tenant_slug: str,
@@ -809,12 +834,14 @@ async def published_media(
         return Response(content=asset.content, media_type=asset.mime_type)
 
 
+# Handle booking context for this module.
 @router.get("/booking/tenants/{tenant_slug}")
 async def booking_context(tenant_slug: str):
     resolution = await resolve_organization(slug=tenant_slug, surface="booking")
     return await storefront_data(resolution.organization)
 
 
+# Handle availability by slug for this module.
 @router.get("/booking/tenants/{tenant_slug}/availability")
 async def availability_by_slug(
     tenant_slug: str,
@@ -831,6 +858,7 @@ async def availability_by_slug(
     )
 
 
+# Handle booking by slug for this module.
 @router.post("/booking/tenants/{tenant_slug}/appointments", status_code=201)
 async def booking_by_slug(
     tenant_slug: str, body: PublicBooking, request: Request

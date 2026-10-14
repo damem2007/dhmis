@@ -17,6 +17,7 @@ router = APIRouter(prefix="/documents", tags=["Documents and imaging"])
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 
 
+# Defines the upload model, contract, or value object.
 class Upload(BaseModel):
     patient_id: str
     category: str = Field(pattern="^(image|document)$")
@@ -27,6 +28,7 @@ class Upload(BaseModel):
     comparison_group: str = Field(default="", max_length=80)
 
 
+# Handle upload for this module.
 @router.post("", status_code=201)
 async def upload(body: Upload, db=Depends(db_session), actor=Depends(permit("clinical"))):
     patient = await required(db, Patient, body.patient_id)
@@ -59,6 +61,7 @@ async def upload(body: Upload, db=Depends(db_session), actor=Depends(permit("cli
     return result
 
 
+# Retrieve list documents for the current request or workflow.
 @router.get("/{patient_id}")
 async def list_documents(patient_id: str, db=Depends(db_session), actor=Depends(permit("clinical"))):
     await required(db, Patient, patient_id)
@@ -69,6 +72,7 @@ async def list_documents(patient_id: str, db=Depends(db_session), actor=Depends(
     return [{key: value for key, value in serialize(row).items() if key != "content"} for row in rows]
 
 
+# Handle file for this module.
 @router.get("/file/{identifier}")
 async def file(identifier: str, db=Depends(db_session), actor=Depends(permit("clinical"))):
     row = await required(db, Document, identifier)

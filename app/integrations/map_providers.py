@@ -13,6 +13,7 @@ from app.integrations.contracts import IntegrationFailure
 class OpenStreetMapProvider:
     """Provider for OpenStreetMap embeds and directions links."""
 
+    # Initialize the instance with its required state.
     def __init__(self, context):
         self.options = context.options
         self.base_url = str(
@@ -22,6 +23,7 @@ class OpenStreetMapProvider:
             self.options.get("embed_base_url", f"{self.base_url}/export/embed.html")
         ).rstrip("/")
 
+    # Handle location links for this module.
     def location_links(
         self,
         latitude: float,
@@ -63,6 +65,7 @@ class OpenStreetMapProvider:
 class TomTomMapProvider:
     """TomTom static map and map-site links using the configured API key."""
 
+    # Initialize the instance with its required state.
     def __init__(self, context):
         self.options = context.options
         self.api_key = str(self.options.get("api_key", self.options.get("key", ""))).strip()
@@ -75,6 +78,7 @@ class TomTomMapProvider:
             self.options.get("web_base_url", "https://www.tomtom.com/map/")
         ).rstrip("/")
 
+    # Handle location links for this module.
     def location_links(
         self,
         latitude: float,

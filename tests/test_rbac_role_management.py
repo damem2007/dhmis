@@ -3,6 +3,7 @@ from app.rbac.bootstrap import seed_tenant_super_admin
 from app.rbac.runtime import decide_tenant
 
 
+# Exercise or prepare test tenant role lifecycle grants assignment and isolation for this test module.
 async def test_tenant_role_lifecycle_grants_assignment_and_isolation(client, tenants):
     tenant = tenants[0]
     async with tenant_session(tenant["org"].schema_name) as db:
@@ -110,6 +111,7 @@ async def test_tenant_role_lifecycle_grants_assignment_and_isolation(client, ten
     assert missing.status_code == 404
 
 
+# Exercise or prepare test grant validation clears dependents and rejects wrong domain for this test module.
 async def test_grant_validation_clears_dependents_and_rejects_wrong_domain(client, tenants):
     tenant = tenants[0]
     async with tenant_session(tenant["org"].schema_name) as db:

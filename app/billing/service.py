@@ -14,6 +14,7 @@ from app.organizations.jurisdiction import jurisdiction
 from app.patients.models import Patient
 
 
+# Create or issue create payment plan while applying existing validation and authorization.
 async def create_payment_plan(
     db, actor, invoice_id: str, installments: int, first_due: date
 ):
@@ -91,6 +92,7 @@ async def create_payment_plan(
     return row
 
 
+# Handle payment for this module.
 async def payment(
     db, actor, invoice_id, amount_cents, key, kind="payment", reference=None, payment_method_token=None
 ):

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 TEETH = {str(i) for i in range(1, 33)} | set("ABCDEFGHIJKLMNOPQRST")
 
 
+# Defines the chart input model, contract, or value object.
 class ChartInput(BaseModel):
     patient_id: str
     encounter_id: str | None = None
@@ -13,6 +14,7 @@ class ChartInput(BaseModel):
     condition: str = Field(min_length=1, max_length=100)
     notes: str = Field(default="", max_length=4000)
 
+    # Handle valid tooth for this module.
     @field_validator("tooth", mode="before")
     @classmethod
     def valid_tooth(cls, value):
@@ -22,6 +24,7 @@ class ChartInput(BaseModel):
         return value
 
 
+# Defines the perio site model, contract, or value object.
 class PerioSite(BaseModel):
     depths: list[int] = Field(min_length=6, max_length=6)
     bleeding: list[bool] = Field(min_length=6, max_length=6)
@@ -29,6 +32,7 @@ class PerioSite(BaseModel):
     furcation: int = Field(ge=0, le=3)
     mobility: int = Field(ge=0, le=3)
 
+    # Handle valid depths for this module.
     @field_validator("depths")
     @classmethod
     def valid_depths(cls, values):
@@ -36,6 +40,7 @@ class PerioSite(BaseModel):
             raise ValueError("Pocket depths must be 0–20 mm")
         return values
 
+    # Handle valid recession for this module.
     @field_validator("recession")
     @classmethod
     def valid_recession(cls, values):
@@ -44,6 +49,7 @@ class PerioSite(BaseModel):
         return values
 
 
+# Defines the perio input model, contract, or value object.
 class PerioInput(BaseModel):
     patient_id: str
     encounter_id: str | None = None
@@ -51,6 +57,7 @@ class PerioInput(BaseModel):
     measurements: dict[str, PerioSite]
     status: Literal["draft", "complete"] = "draft"
 
+    # Handle complete exam for this module.
     @model_validator(mode="after")
     def complete_exam(self):
         if len(set(self.dentition)) != len(self.dentition) or not set(self.dentition) <= TEETH:
@@ -62,11 +69,13 @@ class PerioInput(BaseModel):
         return self
 
 
+# Defines the procedure input model, contract, or value object.
 class ProcedureInput(BaseModel):
     service_id: str
     tooth: str | None = None
     quantity: int = Field(default=1, ge=1, le=32)
 
+    # Handle valid tooth for this module.
     @field_validator("tooth")
     @classmethod
     def valid_tooth(cls, value):
@@ -75,10 +84,12 @@ class ProcedureInput(BaseModel):
         return value
 
 
+# Defines the encounter input model, contract, or value object.
 class EncounterInput(BaseModel):
     soap: dict[str, str]
     procedures: list[ProcedureInput] = Field(default_factory=list, max_length=100)
 
+    # Handle valid soap for this module.
     @field_validator("soap")
     @classmethod
     def valid_soap(cls, value):
@@ -91,16 +102,19 @@ class EncounterInput(BaseModel):
         return value
 
 
+# Defines the treatment phase model, contract, or value object.
 class TreatmentPhase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     procedures: list[ProcedureInput] = Field(min_length=1, max_length=100)
 
 
+# Defines the treatment option model, contract, or value object.
 class TreatmentOption(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     phases: list[TreatmentPhase] = Field(min_length=1, max_length=20)
 
 
+# Defines the treatment input model, contract, or value object.
 class TreatmentInput(BaseModel):
     patient_id: str
     provider_id: str
@@ -108,10 +122,12 @@ class TreatmentInput(BaseModel):
     options: list[TreatmentOption] = Field(min_length=1, max_length=8)
 
 
+# Defines the acceptance model, contract, or value object.
 class Acceptance(BaseModel):
     option: int = Field(ge=0)
 
 
+# Defines the addendum input model, contract, or value object.
 class AddendumInput(BaseModel):
     record_type: Literal[
         "encounter",

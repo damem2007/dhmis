@@ -9,6 +9,7 @@ branch_labels = None
 depends_on = None
 
 
+# Run the upgrade entry point for this module.
 def upgrade():
     schema = context.config.attributes["schema"]
     if schema != "dhmis_control":
@@ -34,6 +35,7 @@ def upgrade():
     op.create_index("ix_platform_regions_code", "platform_regions", ["code"], schema=schema)
 
 
+# Run the downgrade entry point for this module.
 def downgrade():
     schema = context.config.attributes["schema"]
     if schema == "dhmis_control":

@@ -10,6 +10,7 @@ from app.notifications.service import dispatch
 router = APIRouter(prefix="/notifications", tags=["Notification operations"])
 
 
+# Internal helper for feed item.
 def _feed_item(row):
     status = row.status or "pending"
     severity = "danger" if status in {"failed", "retry"} else "warning" if status == "pending" else "info"
@@ -44,6 +45,7 @@ def _feed_item(row):
     }
 
 
+# Handle notification feed for this module.
 @router.get("/feed")
 async def notification_feed(
     page: int = Query(default=1, ge=1),
@@ -74,6 +76,7 @@ async def notification_feed(
     }
 
 
+# Handle messages for this module.
 @router.get("")
 async def messages(db=Depends(db_session), actor=Depends(permit("messaging.notification_delivery.read"))):
     rows = (
@@ -83,11 +86,13 @@ async def messages(db=Depends(db_session), actor=Depends(permit("messaging.notif
     return [serialize(x) for x in rows]
 
 
+# Handle run for this module.
 @router.post("/dispatch")
 async def run(db=Depends(db_session), actor=Depends(permit("messaging.notification_delivery.retry"))):
     return await dispatch(db, actor)
 
 
+# Handle retry for this module.
 @router.post("/{identifier}/retry")
 async def retry(identifier: str, db=Depends(db_session), actor=Depends(permit("messaging.notification_delivery.retry"))):
     row = await required(db, OutboxMessage, identifier, lock=True)

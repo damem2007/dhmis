@@ -18,6 +18,7 @@ from app.prescriptions.service import safety_flags
 router = APIRouter(prefix="/prescriptions", tags=["Prescriptions"])
 
 
+# Defines the prescription input model, contract, or value object.
 class PrescriptionInput(BaseModel):
     patient_id: str
     prescriber_id: str
@@ -31,6 +32,7 @@ class PrescriptionInput(BaseModel):
     override_reason: str = Field(default="", max_length=1000)
 
 
+# Defines the safety rule input model, contract, or value object.
 class SafetyRuleInput(BaseModel):
     medication: str = Field(min_length=2, max_length=160)
     conflicts: list[str] = Field(min_length=1, max_length=100)
@@ -38,6 +40,7 @@ class SafetyRuleInput(BaseModel):
     message: str = Field(min_length=5, max_length=500)
 
 
+# Handle history for this module.
 @router.get("/patient/{patient_id}")
 async def history(patient_id: str, db=Depends(db_session), actor=Depends(permit("prescriptions"))):
     await required(db, Patient, patient_id)
@@ -52,6 +55,7 @@ async def history(patient_id: str, db=Depends(db_session), actor=Depends(permit(
     return [serialize(row) for row in rows]
 
 
+# Handle issue for this module.
 @router.post("", status_code=201)
 async def issue(
     body: PrescriptionInput,
@@ -93,6 +97,7 @@ async def issue(
     return serialize(row)
 
 
+# Handle cancel for this module.
 @router.post("/{identifier}/cancel")
 async def cancel(identifier: str, db=Depends(db_session), actor=Depends(permit("prescriptions"))):
     row = await required(db, Prescription, identifier, lock=True)
@@ -104,6 +109,7 @@ async def cancel(identifier: str, db=Depends(db_session), actor=Depends(permit("
     return serialize(row)
 
 
+# Handle printable for this module.
 @router.get("/{identifier}/print", response_class=HTMLResponse)
 async def printable(
     identifier: str,
@@ -128,11 +134,13 @@ async def printable(
     )
 
 
+# Handle rules for this module.
 @router.get("/safety-rules/all")
 async def rules(db=Depends(db_session), actor=Depends(permit("settings"))):
     return [serialize(row) for row in (await db.scalars(select(MedicationSafetyRule))).all()]
 
 
+# Create or issue create rule while applying existing validation and authorization.
 @router.post("/safety-rules", status_code=201)
 async def create_rule(
     body: SafetyRuleInput,

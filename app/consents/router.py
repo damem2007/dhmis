@@ -14,11 +14,13 @@ from app.patients.models import Patient
 router = APIRouter(prefix="/consents", tags=["Sandbox consents"])
 
 
+# Defines the consent input model, contract, or value object.
 class ConsentInput(BaseModel):
     patient_id: str
     title: str = Field(min_length=3, max_length=180)
 
 
+# Handle consents for this module.
 @router.get("/{patient_id}")
 async def consents(patient_id: str, db=Depends(db_session), actor=Depends(permit("consents"))):
     rows = (await db.scalars(select(Consent).where(Consent.patient_id == patient_id))).all()
@@ -26,6 +28,7 @@ async def consents(patient_id: str, db=Depends(db_session), actor=Depends(permit
     return [serialize(x) for x in rows]
 
 
+# Handle request for this module.
 @router.post("", status_code=201)
 async def request(body: ConsentInput, db=Depends(db_session), actor=Depends(permit("consents"))):
     patient = await required(db, Patient, body.patient_id)
@@ -34,6 +37,7 @@ async def request(body: ConsentInput, db=Depends(db_session), actor=Depends(perm
     return serialize(row)
 
 
+# Handle complete for this module.
 @router.post("/{identifier}/simulate-signature")
 async def complete(identifier: str, db=Depends(db_session), actor=Depends(permit("consents"))):
     row = await required(db, Consent, identifier, lock=True)

@@ -10,10 +10,12 @@ import httpx
 from app.integrations.contracts import IntegrationFailure, MessageRequest
 
 
+# Defines the provider context model, contract, or value object.
 class ProviderContext(Protocol):
     options: dict
 
 
+# Handle required for this module.
 def required(options: dict, key: str) -> str:
     value = str(options.get(key, "")).strip()
     if not value:
@@ -21,10 +23,13 @@ def required(options: dict, key: str) -> str:
     return value
 
 
+# Defines the s m t p email provider model, contract, or value object.
 class SMTPEmailProvider:
+    # Initialize the instance with its required state.
     def __init__(self, context: ProviderContext):
         self.options = context.options
 
+    # Handle send for this module.
     async def send(self, request: MessageRequest) -> dict:
         if request.channel != "email":
             raise IntegrationFailure("SMTP supports email messages only")
@@ -40,6 +45,7 @@ class SMTPEmailProvider:
         message["Subject"] = request.subject
         message.set_content(request.body)
 
+        # Handle deliver for this module.
         def deliver():
             with smtplib.SMTP(host, port, timeout=20) as client:
                 if use_tls:
@@ -55,10 +61,13 @@ class SMTPEmailProvider:
         return {"reference": request.idempotency_key, "status": "sent", "sandbox": False}
 
 
+# Defines the mailjet email provider model, contract, or value object.
 class MailjetEmailProvider:
+    # Initialize the instance with its required state.
     def __init__(self, context: ProviderContext):
         self.options = context.options
 
+    # Handle send for this module.
     async def send(self, request: MessageRequest) -> dict:
         if request.channel != "email":
             raise IntegrationFailure("Mailjet supports email messages only")

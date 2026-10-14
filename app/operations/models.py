@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the provider credential model, contract, or value object.
 class ProviderCredential(Record, Base):
     __tablename__ = "provider_credentials"
     __table_args__ = {"schema": "tenant"}

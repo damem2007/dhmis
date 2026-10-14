@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, with_loader_criteria
 from app.core.models import Base
 
 
+# Handle restrict reads for this module.
 @event.listens_for(Session, "do_orm_execute")
 def restrict_reads(state):
     actor = state.session.info.get("actor")
@@ -27,6 +28,7 @@ def restrict_reads(state):
             )
 
 
+# Handle restrict writes for this module.
 @event.listens_for(Session, "before_flush")
 def restrict_writes(session, context, instances):
     actor = session.info.get("actor")

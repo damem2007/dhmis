@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the outbox message model, contract, or value object.
 class OutboxMessage(Record, Base):
     __tablename__ = "outbox_messages"
     __table_args__ = {"schema": "tenant"}

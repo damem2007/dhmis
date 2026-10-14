@@ -3,6 +3,7 @@ from sqlalchemy import text
 from app.core.database import checked_schema, engine_for
 
 
+# Handle database snapshot for this module.
 async def database_snapshot(schema: str, alias: str):
     checked_schema(schema)
     async with engine_for(alias).connect() as connection:
@@ -30,6 +31,7 @@ async def database_snapshot(schema: str, alias: str):
         return {"exists": True, "version": version, "tables": tables}
 
 
+# Handle extraction preflight for this module.
 async def extraction_preflight(organization, target_alias: str):
     if target_alias == organization.database_alias:
         raise ValueError("Target alias must differ from the current database alias")

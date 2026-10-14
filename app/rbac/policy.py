@@ -49,6 +49,7 @@ class Domain(StrEnum):
     TENANT = "tenant"
 
 
+# Defines the scope model, contract, or value object.
 class Scope(StrEnum):
     PLATFORM = "Platform"
     ORGANIZATION = "Organization"
@@ -57,6 +58,7 @@ class Scope(StrEnum):
     OWN = "Own"
 
 
+# Defines the risk model, contract, or value object.
 class Risk(IntEnum):
     LOW = 1
     MEDIUM = 2
@@ -64,23 +66,27 @@ class Risk(IntEnum):
     CRITICAL = 4
 
 
+# Defines the action group model, contract, or value object.
 class ActionGroup(StrEnum):
     READ = "read"
     CHANGE = "change"
     ACTION = "action"
 
 
+# Defines the access level model, contract, or value object.
 class AccessLevel(StrEnum):
     NONE = "none"
     READ = "read"
     READ_WRITE = "readWrite"
 
 
+# Defines the grant effect model, contract, or value object.
 class GrantEffect(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
 
 
+# Defines the role status model, contract, or value object.
 class RoleStatus(StrEnum):
     DRAFT = "draft"
     PENDING = "pending"
@@ -89,6 +95,7 @@ class RoleStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+# Defines the request status model, contract, or value object.
 class RequestStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
@@ -99,11 +106,13 @@ class RequestStatus(StrEnum):
     CONFLICTED = "conflicted"
 
 
+# Defines the approval decision model, contract, or value object.
 class ApprovalDecision(StrEnum):
     APPROVE = "approve"
     REJECT = "reject"
 
 
+# Defines the four eyes scope model, contract, or value object.
 class FourEyesScope(StrEnum):
     OFF = "Off"
     TENANT = "Tenant"
@@ -111,6 +120,7 @@ class FourEyesScope(StrEnum):
     BOTH = "Both"
 
 
+# Defines the issue code model, contract, or value object.
 class IssueCode(StrEnum):
     UNKNOWN_PERMISSION = "unknown_permission"
     WRONG_DOMAIN = "wrong_domain"
@@ -175,6 +185,7 @@ class ActionDefinition:
     retired: bool = False
 
 
+# Defines the resource definition model, contract, or value object.
 @dataclass(frozen=True)
 class ResourceDefinition:
     key: str
@@ -185,6 +196,7 @@ class ResourceDefinition:
     retired: bool = False
 
 
+# Defines the module definition model, contract, or value object.
 @dataclass(frozen=True)
 class ModuleDefinition:
     id: str
@@ -193,6 +205,7 @@ class ModuleDefinition:
     resources: tuple[ResourceDefinition, ...]
 
 
+# Defines the permission definition model, contract, or value object.
 @dataclass(frozen=True)
 class PermissionDefinition:
     key: PermissionKey
@@ -224,6 +237,7 @@ class Conditions:
     ip_allow_list: tuple[str, ...] = ()
 
 
+# Defines the grant model, contract, or value object.
 @dataclass(frozen=True)
 class Grant:
     effect: GrantEffect
@@ -231,6 +245,7 @@ class Grant:
     conditions: Conditions | None = None
 
 
+# Defines the role model, contract, or value object.
 @dataclass
 class Role:
     id: str
@@ -243,11 +258,13 @@ class Role:
     locked: bool = False
     version: int = 1
 
+    # Handle assignable for this module.
     @property
     def assignable(self) -> bool:
         return self.status is RoleStatus.PUBLISHED
 
 
+# Defines the assignment model, contract, or value object.
 @dataclass(frozen=True)
 class Assignment:
     user_id: str
@@ -274,11 +291,13 @@ class FourEyesRule:
     priority: int
     patterns: tuple[str, ...]
 
+    # Handle enabled for this module.
     @property
     def enabled(self) -> bool:
         return self.scope is not FourEyesScope.OFF
 
 
+# Defines the rule match model, contract, or value object.
 @dataclass(frozen=True)
 class RuleMatch:
     rule_id: str
@@ -287,6 +306,7 @@ class RuleMatch:
     governs: bool
 
 
+# Defines the rule stats model, contract, or value object.
 @dataclass(frozen=True)
 class RuleStats:
     matches: int
@@ -294,6 +314,7 @@ class RuleStats:
     overlaps: int
 
 
+# Defines the so d rule model, contract, or value object.
 @dataclass(frozen=True)
 class SoDRule:
     id: str
@@ -330,6 +351,7 @@ class ApprovalPolicy:
     break_glass_requires_step_up_mfa: bool = True
     break_glass_review_within_hours: int = 24
 
+    # Internal helper for post init.
     def __post_init__(self) -> None:
         if self.expires_after_hours not in APPROVAL_EXPIRY_HOURS:
             raise ValueError(
@@ -339,6 +361,7 @@ class ApprovalPolicy:
             raise ValueError("approvers_needed must be 1 or 2")
 
 
+# Defines the change patch model, contract, or value object.
 @dataclass(frozen=True)
 class ChangePatch:
     role_id: str
@@ -347,6 +370,7 @@ class ChangePatch:
     publish: bool | None = None
 
 
+# Defines the change decision model, contract, or value object.
 @dataclass
 class ChangeDecision:
     user_id: str
@@ -354,6 +378,7 @@ class ChangeDecision:
     comment: str | None = None
     decided_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
+    # Internal helper for post init.
     def __post_init__(self) -> None:
         if self.decision is ApprovalDecision.REJECT:
             comment = (self.comment or "").strip()
@@ -364,6 +389,7 @@ class ChangeDecision:
                 )
 
 
+# Defines the change request model, contract, or value object.
 @dataclass
 class ChangeRequest:
     id: str
@@ -385,6 +411,7 @@ class ChangeRequest:
     break_glass: bool = False
     role_version: int | None = None
 
+    # Internal helper for post init.
     def __post_init__(self) -> None:
         if len(self.reason.strip()) < CHANGE_REASON_MIN_CHARS:
             raise ValueError(
@@ -393,6 +420,7 @@ class ChangeRequest:
             )
 
 
+# Defines the policy version model, contract, or value object.
 @dataclass(frozen=True)
 class PolicyVersion:
     version: int
@@ -412,6 +440,7 @@ class PolicyVersion:
 Reach = Literal[Scope.PLATFORM, Scope.ORGANIZATION, Scope.LOCATION]
 
 
+# Defines the decision model, contract, or value object.
 @dataclass(frozen=True)
 class Decision:
     allowed: bool
@@ -425,6 +454,7 @@ class Decision:
     trace: tuple[str, ...] = ()
 
 
+# Defines the issue model, contract, or value object.
 @dataclass(frozen=True)
 class Issue:
     key: str
@@ -432,6 +462,7 @@ class Issue:
     message: str
 
 
+# Defines the grant change model, contract, or value object.
 @dataclass(frozen=True)
 class GrantChange:
     key: PermissionKey
@@ -439,6 +470,7 @@ class GrantChange:
     after: Grant | None = None
 
 
+# Defines the policy context model, contract, or value object.
 @dataclass
 class PolicyContext:
     permissions: dict[PermissionKey, PermissionDefinition]
@@ -449,6 +481,7 @@ class PolicyContext:
         default_factory=dict
     )
 
+    # Internal helper for post init.
     def __post_init__(self) -> None:
         if not self.permissions_by_resource:
             grouped: dict[str, list[PermissionDefinition]] = {}
@@ -544,6 +577,7 @@ NEEDS_UPDATE = frozenset(
 )
 
 
+# Handle group of for this module.
 def group_of(action: str) -> ActionGroup:
     if action == "read":
         return ActionGroup.READ
@@ -552,6 +586,7 @@ def group_of(action: str) -> ActionGroup:
     return ActionGroup.ACTION
 
 
+# Handle derive risk for this module.
 def derive_risk(action: str, restricted: bool = False) -> Risk:
     if action in CRITICAL_ACTIONS:
         base = Risk.CRITICAL
@@ -572,6 +607,7 @@ def derive_risk(action: str, restricted: bool = False) -> Risk:
     return base
 
 
+# Handle compute requires for this module.
 def compute_requires(
     action: str,
     resource_actions: Sequence[str],
@@ -707,6 +743,7 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(out) + "$")
 
 
+# Handle pattern matches for this module.
 def pattern_matches(
     pattern: str,
     permission: PermissionDefinition,
@@ -717,6 +754,7 @@ def pattern_matches(
     return bool(glob_to_regex(pattern).match(permission.key))
 
 
+# Handle rule applies to domain for this module.
 def rule_applies_to_domain(
     rule: FourEyesRule,
     domain: Domain,
@@ -756,6 +794,7 @@ def matching_rules_for(
     return sorted(matches, key=lambda rule: (rule.priority, rule.id))
 
 
+# Handle governing rule for for this module.
 def governing_rule_for(
     permission: PermissionDefinition,
     rules: Sequence[FourEyesRule],
@@ -764,6 +803,7 @@ def governing_rule_for(
     return matches[0] if matches else None
 
 
+# Handle four eyes stats for this module.
 def four_eyes_stats(
     rule: FourEyesRule,
     permissions: Mapping[PermissionKey, PermissionDefinition],
@@ -799,6 +839,7 @@ def four_eyes_stats(
     )
 
 
+# Handle overlapping rule matches for this module.
 def overlapping_rule_matches(
     permissions: Mapping[PermissionKey, PermissionDefinition],
     rules: Sequence[FourEyesRule],
@@ -831,6 +872,7 @@ def overlapping_rule_matches(
 # ============================================================
 
 
+# Retrieve resolve grant for the current request or workflow.
 def resolve_grant(
     role: Role,
     permission: PermissionDefinition,
@@ -882,6 +924,7 @@ def resolve_grant(
     )
 
 
+# Handle detect inheritance cycle for this module.
 def detect_inheritance_cycle(
     role: Role,
     roles: Mapping[str, Role],
@@ -903,6 +946,7 @@ def detect_inheritance_cycle(
 # ============================================================
 
 
+# Handle active assignments for this module.
 def active_assignments(
     assignments: Sequence[Assignment],
     roles: Mapping[str, Role],
@@ -930,6 +974,7 @@ def active_assignments(
     return result
 
 
+# Handle assignment reach for this module.
 def assignment_reach(assignment: Assignment) -> Reach:
     if assignment.level is Scope.PLATFORM:
         return Scope.PLATFORM
@@ -940,6 +985,7 @@ def assignment_reach(assignment: Assignment) -> Reach:
     raise ValueError("Assignments must use Platform/Organization/Location reach")
 
 
+# Handle effective scope for this module.
 def effective_scope(
     grant_scope: Scope,
     assignment: Assignment,
@@ -967,6 +1013,7 @@ def effective_scope(
     )
 
 
+# Handle condition allows for this module.
 def condition_allows(
     conditions: Conditions | None,
     *,
@@ -1010,6 +1057,7 @@ def condition_allows(
 # ============================================================
 
 
+# Handle allowed actions for resource for this module.
 def allowed_actions_for_resource(
     resource_permissions: Sequence[PermissionDefinition],
     assignments: Sequence[Assignment],
@@ -1041,6 +1089,7 @@ def allowed_actions_for_resource(
     return allowed
 
 
+# Handle decide for this module.
 def decide(
     permission_key: PermissionKey,
     assignments: Sequence[Assignment],
@@ -1240,6 +1289,7 @@ def decide(
 # ============================================================
 
 
+# Handle effective allowed keys for this module.
 def effective_allowed_keys(
     role: Role,
     ctx: PolicyContext,
@@ -1260,6 +1310,7 @@ def effective_allowed_keys(
     return sorted(output)
 
 
+# Validate or enforce validate grants before the operation continues.
 def validate_grants(
     role: Role,
     ctx: PolicyContext,
@@ -1443,6 +1494,7 @@ def validate_grants(
 # ============================================================
 
 
+# Retrieve find conflicts for the current request or workflow.
 def find_conflicts(
     role: Role,
     ctx: PolicyContext,
@@ -1458,6 +1510,7 @@ def find_conflicts(
         if key in ctx.permissions
     ]
 
+    # Handle side matches for this module.
     def side_matches(patterns: Sequence[str]) -> bool:
         return any(
             pattern_matches(pattern, permission)
@@ -1477,6 +1530,7 @@ def find_conflicts(
 # ============================================================
 
 
+# Handle diff grants for this module.
 def diff_grants(
     before: Mapping[PermissionKey, Grant],
     after: Mapping[PermissionKey, Grant],
@@ -1494,6 +1548,7 @@ def diff_grants(
     ]
 
 
+# Handle apply patch for this module.
 def apply_patch(
     role: Role,
     patch: Sequence[ChangePatch],
@@ -1519,6 +1574,7 @@ def apply_patch(
     )
 
 
+# Handle requires approval for this module.
 def requires_approval(
     changed_permissions: Sequence[PermissionDefinition],
     *,
@@ -1565,6 +1621,7 @@ def requires_approval(
 # ============================================================
 
 
+# Handle eligible approver roles for this module.
 def eligible_approver_roles(
     domain: Domain,
     policy: ApprovalPolicy,
@@ -1575,6 +1632,7 @@ def eligible_approver_roles(
     return policy.platform_eligible_roles
 
 
+# Determine whether can decide.
 def can_decide(
     request: ChangeRequest,
     *,
@@ -1622,6 +1680,7 @@ def can_decide(
     return True, None
 
 
+# Handle apply decision for this module.
 def apply_decision(
     request: ChangeRequest,
     decision: ChangeDecision,

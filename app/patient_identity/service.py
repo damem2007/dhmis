@@ -17,6 +17,7 @@ from app.patient_identity.models import PatientSession, PatientUser
 from app.patients.models import GuardianLink
 
 
+# Defines the patient actor model, contract, or value object.
 @dataclass
 class PatientActor:
     user_id: str
@@ -27,6 +28,7 @@ class PatientActor:
     adapter_names: dict[str, str] | None = None
 
 
+# Create or issue issue patient token while applying existing validation and authorization.
 async def issue_patient_token(
     db, user: PatientUser, organization: Organization, authentication_method="pwd"
 ):
@@ -52,6 +54,7 @@ async def issue_patient_token(
     )
 
 
+# Handle current patient for this module.
 async def current_patient(
     request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer)
 ):
@@ -108,11 +111,13 @@ async def current_patient(
         raise HTTPException(401, "Valid patient session required") from None
 
 
+# Handle patient db session for this module.
 async def patient_db_session(actor: PatientActor = Depends(current_patient)):
     async with organization_session(actor.organization) as db:
         yield db
 
 
+# Handle authorized patient ids for this module.
 async def authorized_patient_ids(db, actor: PatientActor):
     links = (
         await db.scalars(
@@ -127,6 +132,7 @@ async def authorized_patient_ids(db, actor: PatientActor):
     return {actor.patient_id, *(link.dependent_id for link in links if link.guardian_id == actor.patient_id)}
 
 
+# Validate or enforce require patient access before the operation continues.
 async def require_patient_access(db, actor: PatientActor, patient_id: str):
     if patient_id not in await authorized_patient_ids(db, actor):
         raise HTTPException(403, "Patient profile is outside this portal account")

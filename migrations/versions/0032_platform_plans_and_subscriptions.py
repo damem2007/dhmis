@@ -9,6 +9,7 @@ branch_labels = None
 depends_on = None
 
 
+# Handle record columns for this module.
 def record_columns():
     return [
         sa.Column("id", sa.String(36), primary_key=True),
@@ -19,6 +20,7 @@ def record_columns():
     ]
 
 
+# Run the upgrade entry point for this module.
 def upgrade():
     schema = context.config.attributes["schema"]
     if schema != "dhmis_control":
@@ -127,5 +129,6 @@ def upgrade():
     )
 
 
+# Run the downgrade entry point for this module.
 def downgrade():
     raise RuntimeError("Use a reviewed forward migration")

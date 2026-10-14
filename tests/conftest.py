@@ -21,6 +21,7 @@ from app.rbac.bootstrap import seed_tenant_super_admin
 from app.patients.models import Patient
 
 
+# Exercise or prepare tenants for this test module.
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def tenants():
     await migrate_schema("dhmis_control")
@@ -144,6 +145,7 @@ async def tenants():
     await engine.dispose()
 
 
+# Exercise or prepare client for this test module.
 @pytest_asyncio.fixture
 async def client():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

@@ -3,10 +3,12 @@ from sqlalchemy import select
 from app.prescriptions.models import MedicationSafetyRule, Prescription
 
 
+# Handle normalized for this module.
 def normalized(value: str) -> str:
     return " ".join(value.lower().split())
 
 
+# Handle safety flags for this module.
 async def safety_flags(db, patient, medication: str):
     medication_key = normalized(medication)
     allergies = [normalized(value) for value in patient.allergies]

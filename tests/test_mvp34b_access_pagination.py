@@ -13,6 +13,7 @@ from app.identity.service import issue_token
 from app.organizations.models import Location
 
 
+# Exercise or prepare test location roles are effective without permission union for this test module.
 async def test_location_roles_are_effective_without_permission_union(client, tenants):
     tenant = tenants[0]
     async with tenant_session(tenant["org"].schema_name) as db:
@@ -130,6 +131,7 @@ async def test_location_roles_are_effective_without_permission_union(client, ten
     } in replaced.json()["changes"]
 
 
+# Exercise or prepare test invitation and claim worklists are server paginated for this test module.
 async def test_invitation_and_claim_worklists_are_server_paginated(client, tenants):
     tenant = tenants[0]
     email = "mvp34b-invite@example.test"

@@ -10,6 +10,7 @@ from app.integrations.registry import provider_options
 from app.messaging.models import Message
 
 
+# Exercise or prepare patient session for this test module.
 async def patient_session(client, tenant):
     invitation = await client.post(
         "/v1/portal/invites",
@@ -38,6 +39,7 @@ async def patient_session(client, tenant):
     return {"Authorization": "Bearer " + logged_in.json()["access_token"]}
 
 
+# Exercise or prepare test patient identity audience family scope and revocation for this test module.
 async def test_patient_identity_audience_family_scope_and_revocation(client, tenants):
     tenant = tenants[0]
     headers = await patient_session(client, tenant)
@@ -95,6 +97,7 @@ async def test_patient_identity_audience_family_scope_and_revocation(client, ten
     assert (await client.get("/v1/portal/me", headers=headers)).status_code == 401
 
 
+# Exercise or prepare test portal shared scheduling billing forms and messages for this test module.
 async def test_portal_shared_scheduling_billing_forms_and_messages(client, tenants):
     tenant = tenants[1]
     headers = await patient_session(client, tenant)
@@ -194,6 +197,7 @@ async def test_portal_shared_scheduling_billing_forms_and_messages(client, tenan
         assert "sensitivity" not in stored.body_cipher
 
 
+# Exercise or prepare test documents cms public booking and provider seam for this test module.
 async def test_documents_cms_public_booking_and_provider_seam(client, tenants):
     tenant = tenants[0]
     payload = b"synthetic dental image"
@@ -270,6 +274,7 @@ async def test_documents_cms_public_booking_and_provider_seam(client, tenants):
     assert set(hidden["payment_gateway"]) == {"sandbox", "sandbox-decline", "sandbox-timeout"}
 
 
+# Exercise or prepare test phase2 migration is current for this test module.
 async def test_phase2_migration_is_current(tenants):
     for tenant in tenants:
         async with tenant_session(tenant["org"].schema_name) as db:

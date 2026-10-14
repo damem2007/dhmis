@@ -11,6 +11,7 @@ from app.identity.models import (
 )
 
 
+# Defines the effective access model, contract, or value object.
 @dataclass(frozen=True)
 class EffectiveAccess:
     role: str
@@ -20,6 +21,7 @@ class EffectiveAccess:
     assignments: list[dict]
 
 
+# Handle user assignments for this module.
 async def user_assignments(db, user: StaffUser) -> list[StaffLocationAssignment]:
     rows = (
         await db.scalars(
@@ -33,6 +35,7 @@ async def user_assignments(db, user: StaffUser) -> list[StaffLocationAssignment]
     return list(rows)
 
 
+# Handle invite assignments for this module.
 async def invite_assignments(db, invitation: StaffInvite) -> list[StaffInviteAssignment]:
     rows = (
         await db.scalars(
@@ -46,6 +49,7 @@ async def invite_assignments(db, invitation: StaffInvite) -> list[StaffInviteAss
     return list(rows)
 
 
+# Handle effective access for this module.
 async def effective_access(
     db, user: StaffUser, requested_location_id: str | None
 ) -> EffectiveAccess:

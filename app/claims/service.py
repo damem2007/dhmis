@@ -11,6 +11,7 @@ from app.integrations.contracts import RemittanceRequest
 from app.integrations.registry import resolve
 
 
+# Handle adjudicate claim for this module.
 async def adjudicate_claim(db, actor, claim):
     if claim.status not in ("submitted", "appealed"):
         return claim
@@ -33,6 +34,7 @@ async def adjudicate_claim(db, actor, claim):
     return claim
 
 
+# Handle reconcile claim for this module.
 async def reconcile_claim(db, actor, claim):
     if claim.status == "paid":
         return claim

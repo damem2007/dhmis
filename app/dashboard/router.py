@@ -16,9 +16,10 @@ from app.scheduling.models import Appointment
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
+# Handle dashboard for this module.
 @router.get("")
 async def dashboard(db=Depends(db_session), actor=Depends(permit("dashboard"))):
-    location = await db.scalar(select(Location).order_by(Location.created_at))
+    location = await db.scalar(select(Location).where(Location.active).order_by(Location.created_at))
     zone = ZoneInfo(location.timezone if location else "America/Vancouver")
     today = datetime.now(zone).date()
     start = datetime.combine(today, time.min, tzinfo=zone)

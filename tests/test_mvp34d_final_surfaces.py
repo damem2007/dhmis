@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 
+# Exercise or prepare portal account for this test module.
 async def portal_account(client, tenant):
     patient = await client.post(
         "/v1/patients",
@@ -32,6 +33,7 @@ async def portal_account(client, tenant):
     )
     assert accepted.status_code == 200, accepted.text
 
+    # Exercise or prepare login for this test module.
     async def login(password="Portal-password-2026!"):
         response = await client.post(
             "/v1/portal/auth/login",
@@ -47,6 +49,7 @@ async def portal_account(client, tenant):
     return patient.json(), email, login
 
 
+# Exercise or prepare test portal activity account security and templates for this test module.
 async def test_portal_activity_account_security_and_templates(client, tenants):
     tenant = tenants[0]
     summary = await client.get(

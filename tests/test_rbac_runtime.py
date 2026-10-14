@@ -19,6 +19,7 @@ from app.rbac.runtime import (
 )
 
 
+# Internal test helper for role.
 def _role(role_id: str, grants: dict, *, parent_id: str | None = None):
     return Role(
         id=role_id,
@@ -30,6 +31,7 @@ def _role(role_id: str, grants: dict, *, parent_id: str | None = None):
     )
 
 
+# Internal test helper for context.
 def _context(*roles: Role):
     return PolicyContext(
         permissions=approved_permissions(Domain.TENANT),
@@ -39,6 +41,7 @@ def _context(*roles: Role):
     )
 
 
+# Exercise or prepare test domain contexts preserve shared keys without cross domain access for this test module.
 def test_domain_contexts_preserve_shared_keys_without_cross_domain_access():
     tenant = approved_permissions(Domain.TENANT)
     platform = approved_permissions(Domain.PLATFORM)
@@ -51,6 +54,7 @@ def test_domain_contexts_preserve_shared_keys_without_cross_domain_access():
     assert "access.tenant_role.read" not in platform
 
 
+# Exercise or prepare test decision enforces inheritance deny dependencies and scope for this test module.
 def test_decision_enforces_inheritance_deny_dependencies_and_scope():
     allow_read = Grant(GrantEffect.ALLOW, Scope.ORGANIZATION)
     parent = _role(
@@ -107,6 +111,7 @@ def test_decision_enforces_inheritance_deny_dependencies_and_scope():
     assert filtered.filter_scope is Scope.ASSIGNED
 
 
+# Exercise or prepare test persisted tenant context defaults to deny and is tenant isolated for this test module.
 async def test_persisted_tenant_context_defaults_to_deny_and_is_tenant_isolated(tenants):
     first, second = tenants
     async with tenant_session(first["org"].schema_name) as db:
@@ -148,6 +153,7 @@ async def test_persisted_tenant_context_defaults_to_deny_and_is_tenant_isolated(
         assert wrong_domain.trace == ("unknown permission",)
 
 
+# Exercise or prepare test tenant permission api uses canonical domain guard for this test module.
 async def test_tenant_permission_api_uses_canonical_domain_guard(client, tenants):
     tenant = tenants[0]
     async with tenant_session(tenant["org"].schema_name) as db:

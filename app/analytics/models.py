@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the analytics action item model, contract, or value object.
 class AnalyticsActionItem(Record, Base):
     __tablename__ = "analytics_action_items"
     __table_args__ = {"schema": "tenant"}

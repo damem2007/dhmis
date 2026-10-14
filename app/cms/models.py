@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the cms revision model, contract, or value object.
 class CmsRevision(Record, Base):
     __tablename__ = "cms_revisions"
     __table_args__ = {"schema": "tenant"}
@@ -21,6 +22,7 @@ class CmsRevision(Record, Base):
     publication_key: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
 
 
+# Defines the cms publication pointer model, contract, or value object.
 class CmsPublicationPointer(Record, Base):
     __tablename__ = "cms_publication_pointers"
     __table_args__ = {"schema": "tenant"}
@@ -32,6 +34,7 @@ class CmsPublicationPointer(Record, Base):
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+# Defines the cms media asset model, contract, or value object.
 class CmsMediaAsset(Record, Base):
     __tablename__ = "cms_media_assets"
     __table_args__ = (UniqueConstraint("revision_id", "asset_key"), {"schema": "tenant"})

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the platform adapter default model, contract, or value object.
 class PlatformAdapterDefault(Record, Base):
     __tablename__ = "platform_adapter_defaults"
     __table_args__ = (
@@ -16,6 +17,7 @@ class PlatformAdapterDefault(Record, Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+# Defines the tenant adapter override model, contract, or value object.
 class TenantAdapterOverride(Record, Base):
     __tablename__ = "tenant_adapter_overrides"
     __table_args__ = (
@@ -30,6 +32,7 @@ class TenantAdapterOverride(Record, Base):
     approval_reason: Mapped[str] = mapped_column(String(1000), default="")
 
 
+# Defines the adapter customization request model, contract, or value object.
 class AdapterCustomizationRequest(Record, Base):
     __tablename__ = "adapter_customization_requests"
     __table_args__ = {"schema": "dhmis_control"}

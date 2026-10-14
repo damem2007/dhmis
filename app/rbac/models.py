@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the permission registry record model, contract, or value object.
 class PermissionRegistryRecord(Base):
     __tablename__ = "permission_registry"
     __table_args__ = {"schema": "dhmis_control"}
@@ -31,6 +32,7 @@ class PermissionRegistryRecord(Base):
     updated_by: Mapped[str] = mapped_column(String(100), default="registry-sync")
 
 
+# Defines the platform role model, contract, or value object.
 class PlatformRole(Record, Base):
     __tablename__ = "platform_roles"
     __table_args__ = (
@@ -49,6 +51,7 @@ class PlatformRole(Record, Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
 
 
+# Defines the platform role grant model, contract, or value object.
 class PlatformRoleGrant(Record, Base):
     __tablename__ = "platform_role_grants"
     __table_args__ = (
@@ -63,6 +66,7 @@ class PlatformRoleGrant(Record, Base):
     conditions: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Defines the platform role assignment model, contract, or value object.
 class PlatformRoleAssignment(Record, Base):
     __tablename__ = "platform_role_assignments"
     __table_args__ = (
@@ -77,6 +81,7 @@ class PlatformRoleAssignment(Record, Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+# Defines the tenant role model, contract, or value object.
 class TenantRole(Record, Base):
     __tablename__ = "tenant_roles"
     __table_args__ = (
@@ -93,6 +98,7 @@ class TenantRole(Record, Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
 
 
+# Defines the tenant role grant model, contract, or value object.
 class TenantRoleGrant(Record, Base):
     __tablename__ = "tenant_role_grants"
     __table_args__ = (
@@ -110,6 +116,7 @@ class TenantRoleGrant(Record, Base):
     conditions: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Defines the tenant role assignment model, contract, or value object.
 class TenantRoleAssignment(Record, Base):
     __tablename__ = "tenant_role_assignments"
     __table_args__ = (
@@ -144,6 +151,7 @@ class TenantRoleAssignment(Record, Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+# Defines the platform change request model, contract, or value object.
 class PlatformChangeRequest(Record, Base):
     __tablename__ = "platform_change_requests"
     __table_args__ = (
@@ -169,6 +177,7 @@ class PlatformChangeRequest(Record, Base):
     approval_context: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Defines the platform change decision model, contract, or value object.
 class PlatformChangeDecision(Record, Base):
     __tablename__ = "platform_change_decisions"
     __table_args__ = (
@@ -184,6 +193,7 @@ class PlatformChangeDecision(Record, Base):
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+# Defines the platform change notification receipt model, contract, or value object.
 class PlatformChangeNotificationReceipt(Record, Base):
     __tablename__ = "platform_change_notification_receipts"
     __table_args__ = (
@@ -197,6 +207,7 @@ class PlatformChangeNotificationReceipt(Record, Base):
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+# Defines the platform policy version model, contract, or value object.
 class PlatformPolicyVersion(Record, Base):
     __tablename__ = "platform_policy_versions"
     __table_args__ = {"schema": "dhmis_control"}
@@ -208,12 +219,14 @@ class PlatformPolicyVersion(Record, Base):
     break_glass: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+# Defines the platform approval policy model, contract, or value object.
 class PlatformApprovalPolicy(Record, Base):
     __tablename__ = "platform_approval_policy"
     __table_args__ = {"schema": "dhmis_control"}
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Defines the platform four eyes rule model, contract, or value object.
 class PlatformFourEyesRule(Record, Base):
     __tablename__ = "platform_four_eyes_rules"
     __table_args__ = (
@@ -227,6 +240,7 @@ class PlatformFourEyesRule(Record, Base):
     patterns: Mapped[list] = mapped_column(JSON, default=list)
 
 
+# Defines the platform so d rule model, contract, or value object.
 class PlatformSoDRule(Record, Base):
     __tablename__ = "platform_sod_rules"
     __table_args__ = {"schema": "dhmis_control"}
@@ -236,6 +250,7 @@ class PlatformSoDRule(Record, Base):
     side_b: Mapped[list] = mapped_column(JSON, default=list)
 
 
+# Defines the tenant change request model, contract, or value object.
 class TenantChangeRequest(Record, Base):
     __tablename__ = "tenant_change_requests"
     __table_args__ = (
@@ -261,6 +276,7 @@ class TenantChangeRequest(Record, Base):
     approval_context: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Defines the tenant change decision model, contract, or value object.
 class TenantChangeDecision(Record, Base):
     __tablename__ = "tenant_change_decisions"
     __table_args__ = (
@@ -274,6 +290,7 @@ class TenantChangeDecision(Record, Base):
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+# Defines the tenant change notification receipt model, contract, or value object.
 class TenantChangeNotificationReceipt(Record, Base):
     __tablename__ = "tenant_change_notification_receipts"
     __table_args__ = (
@@ -287,6 +304,7 @@ class TenantChangeNotificationReceipt(Record, Base):
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+# Defines the tenant policy version model, contract, or value object.
 class TenantPolicyVersion(Record, Base):
     __tablename__ = "tenant_policy_versions"
     __table_args__ = {"schema": "tenant"}
@@ -298,12 +316,14 @@ class TenantPolicyVersion(Record, Base):
     break_glass: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+# Defines the tenant approval policy model, contract, or value object.
 class TenantApprovalPolicy(Record, Base):
     __tablename__ = "tenant_approval_policy"
     __table_args__ = {"schema": "tenant"}
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Defines the tenant four eyes rule model, contract, or value object.
 class TenantFourEyesRule(Record, Base):
     __tablename__ = "tenant_four_eyes_rules"
     __table_args__ = (
@@ -317,6 +337,7 @@ class TenantFourEyesRule(Record, Base):
     patterns: Mapped[list] = mapped_column(JSON, default=list)
 
 
+# Defines the tenant so d rule model, contract, or value object.
 class TenantSoDRule(Record, Base):
     __tablename__ = "tenant_sod_rules"
     __table_args__ = {"schema": "tenant"}

@@ -15,6 +15,7 @@ from app.scheduling.models import Appointment
 router = APIRouter(prefix="/reports", tags=["Reporting"])
 
 
+# Handle window for this module.
 def window(start: date, end: date):
     if end < start or (end - start).days > 366:
         raise HTTPException(422, "Report range must be 0 to 366 days")
@@ -24,6 +25,7 @@ def window(start: date, end: date):
     )
 
 
+# Handle performance for this module.
 @router.get("/performance")
 async def performance(
     start: date = Query(),

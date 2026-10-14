@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the service model, contract, or value object.
 class Service(Record, Base):
     __tablename__ = "services"
     __table_args__ = (CheckConstraint("fee_cents >= 0"), {"schema": "tenant"})
@@ -15,6 +16,7 @@ class Service(Record, Base):
     description: Mapped[str] = mapped_column(String(1000), default="")
 
 
+# Defines the invoice model, contract, or value object.
 class Invoice(Record, Base):
     __tablename__ = "invoices"
     __table_args__ = (
@@ -33,6 +35,7 @@ class Invoice(Record, Base):
     adjustment_cents: Mapped[int] = mapped_column(Integer, default=0)
 
 
+# Defines the ledger entry model, contract, or value object.
 class LedgerEntry(Record, Base):
     __tablename__ = "ledger_entries"
     __table_args__ = {"schema": "tenant"}
@@ -45,6 +48,7 @@ class LedgerEntry(Record, Base):
     reference: Mapped[str] = mapped_column(String(120), default="")
 
 
+# Defines the fee version model, contract, or value object.
 class FeeVersion(Record, Base):
     __tablename__ = "fee_versions"
     __table_args__ = (CheckConstraint("fee_cents >= 0"), {"schema": "tenant"})
@@ -55,6 +59,7 @@ class FeeVersion(Record, Base):
     effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+# Defines the payment plan model, contract, or value object.
 class PaymentPlan(Record, Base):
     __tablename__ = "payment_plans"
     __table_args__ = {"schema": "tenant"}
@@ -64,6 +69,7 @@ class PaymentPlan(Record, Base):
     installments: Mapped[list] = mapped_column(JSON)
 
 
+# Defines the journal line model, contract, or value object.
 class JournalLine(Record, Base):
     __tablename__ = "journal_lines"
     __table_args__ = {"schema": "tenant"}

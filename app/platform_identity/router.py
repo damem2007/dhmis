@@ -36,48 +36,58 @@ from app.rbac.models import PlatformRole, PlatformRoleAssignment
 router = APIRouter(prefix="/platform/auth", tags=["Platform identity"])
 
 
+# Defines the bootstrap input model, contract, or value object.
 class BootstrapInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     password: str = Field(min_length=12, max_length=128)
 
 
+# Defines the login input model, contract, or value object.
 class LoginInput(BaseModel):
     email: str = Field(max_length=254)
     password: str = Field(min_length=1, max_length=256)
 
 
+# Defines the challenge input model, contract, or value object.
 class ChallengeInput(BaseModel):
     challenge_token: str = Field(min_length=20, max_length=200)
 
 
+# Defines the verify input model, contract, or value object.
 class VerifyInput(ChallengeInput):
     code: str = Field(pattern=r"^\d{6}$")
 
 
+# Defines the accept platform invite model, contract, or value object.
 class AcceptPlatformInvite(BaseModel):
     token: str = Field(min_length=20, max_length=200)
     password: str = Field(min_length=12, max_length=128)
 
 
+# Defines the complete platform password reset model, contract, or value object.
 class CompletePlatformPasswordReset(BaseModel):
     token: str = Field(min_length=20, max_length=200)
     password: str = Field(min_length=12, max_length=128)
 
 
+# Defines the profile update model, contract, or value object.
 class ProfileUpdate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
 
 
+# Defines the password change model, contract, or value object.
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=12, max_length=128)
 
 
+# Defines the mfa reset input model, contract, or value object.
 class MfaResetInput(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+# Handle challenge user for this module.
 async def challenge_user(db, raw):
     challenge = await db.scalar(
         select(PlatformChallenge)
@@ -92,6 +102,7 @@ async def challenge_user(db, raw):
     return challenge, user
 
 
+# Handle bootstrap for this module.
 @router.post("/bootstrap", status_code=201)
 async def bootstrap(body: BootstrapInput, x_bootstrap_key: str = Header(default="")):
     #print(f"Bootstrap request received: {body}")
@@ -117,6 +128,7 @@ async def bootstrap(body: BootstrapInput, x_bootstrap_key: str = Header(default=
     return {"status": "created"}
 
 
+# Handle login for this module.
 @router.post("/login")
 async def login(body: LoginInput, request: Request):
     limits = get_bo_throttle_args()
@@ -150,6 +162,7 @@ async def login(body: LoginInput, request: Request):
     return {"challenge_token": raw, "enrollment_required": enrollment, "expires_in": 300}
 
 
+# Handle accept platform invite for this module.
 @router.post("/invites/accept", status_code=201)
 async def accept_platform_invite(body: AcceptPlatformInvite):
     async with control_session() as db:
@@ -202,6 +215,7 @@ async def accept_platform_invite(body: AcceptPlatformInvite):
         return {"status": "created"}
 
 
+# Handle complete platform password reset for this module.
 @router.post("/password-reset/complete")
 async def complete_platform_password_reset(body: CompletePlatformPasswordReset, request: Request):
     address = request.client.host if request.client else "unknown"
@@ -237,6 +251,7 @@ async def complete_platform_password_reset(body: CompletePlatformPasswordReset, 
     return {"status": "password-updated"}
 
 
+# Handle setup for this module.
 @router.post("/mfa/setup")
 async def setup(body: ChallengeInput):
     async with control_session() as db:
@@ -252,6 +267,7 @@ async def setup(body: ChallengeInput):
         }
 
 
+# Handle verify for this module.
 @router.post("/mfa/verify")
 async def verify(body: VerifyInput):
     async with control_session() as db:
@@ -273,6 +289,7 @@ async def verify(body: VerifyInput):
     return {"access_token": access, "token_type": "bearer", "expires_in": 1800}
 
 
+# Handle me for this module.
 @router.get("/me")
 async def me(actor: PlatformActor = Depends(current_platform)):
     async with control_session() as db:
@@ -296,6 +313,7 @@ async def me(actor: PlatformActor = Depends(current_platform)):
         }
 
 
+# Update update me while preserving existing validation and audit behavior.
 @router.put("/me")
 async def update_me(body: ProfileUpdate, actor: PlatformActor = Depends(current_platform)):
     async with control_session() as db:
@@ -322,6 +340,7 @@ async def update_me(body: ProfileUpdate, actor: PlatformActor = Depends(current_
         }
 
 
+# Update change password while preserving existing validation and audit behavior.
 @router.post("/password/change")
 async def change_password(body: PasswordChange, actor: PlatformActor = Depends(current_platform)):
     async with control_session() as db:
@@ -336,6 +355,7 @@ async def change_password(body: PasswordChange, actor: PlatformActor = Depends(c
     return {"status": "password-updated"}
 
 
+# Handle reset mfa for this module.
 @router.post("/mfa/reset")
 async def reset_mfa(body: MfaResetInput, actor: PlatformActor = Depends(current_platform)):
     async with control_session() as db:
@@ -352,6 +372,7 @@ async def reset_mfa(body: MfaResetInput, actor: PlatformActor = Depends(current_
     return {"status": "mfa-reset"}
 
 
+# Handle logout for this module.
 @router.post("/logout")
 async def logout(actor: PlatformActor = Depends(current_platform)):
     async with control_session() as db:

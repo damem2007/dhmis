@@ -2,15 +2,18 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
+# Defines the jurisdiction provider model, contract, or value object.
 class JurisdictionProvider(Protocol):
     region: str
     currency: str
     locale: str
     claims_adapter: str
 
+    # Handle defaults for this module.
     def defaults(self, organization_policy: dict) -> dict: ...
 
 
+# Defines the canada jurisdiction model, contract, or value object.
 @dataclass(frozen=True)
 class CanadaJurisdiction:
     region: str = "CA"
@@ -18,6 +21,7 @@ class CanadaJurisdiction:
     locale: str = "en-CA"
     claims_adapter: str = "Sandbox1_CDAnet"
 
+    # Handle defaults for this module.
     def defaults(self, organization_policy):
         return {
             "currency": self.currency,
@@ -32,6 +36,7 @@ class CanadaJurisdiction:
         }
 
 
+# Defines the united states jurisdiction model, contract, or value object.
 @dataclass(frozen=True)
 class UnitedStatesJurisdiction:
     region: str = "US"
@@ -39,6 +44,7 @@ class UnitedStatesJurisdiction:
     locale: str = "en-US"
     claims_adapter: str = "Sandbox1_ANSI_X12_835"
 
+    # Handle defaults for this module.
     def defaults(self, organization_policy):
         return {
             "currency": self.currency,
@@ -56,5 +62,6 @@ class UnitedStatesJurisdiction:
 PROVIDERS = {"CA": CanadaJurisdiction(), "US": UnitedStatesJurisdiction()}
 
 
+# Handle jurisdiction for this module.
 def jurisdiction(region):
     return PROVIDERS[region]

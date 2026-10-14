@@ -41,7 +41,9 @@ ADDENDUM_PERMISSIONS = {
 }
 
 
+# Handle addendum permission actor for this module.
 def addendum_permission_actor():
+    # Handle guard for this module.
     async def guard(request: Request, body: AddendumInput, actor=Depends(current_actor)):
         return await permit_tenant(
             ADDENDUM_PERMISSIONS[body.record_type],
@@ -51,6 +53,7 @@ def addendum_permission_actor():
     return guard
 
 
+# Validate or enforce validate encounter before the operation continues.
 async def validate_encounter(db, identifier, patient_id):
     if identifier:
         encounter = await required(db, Encounter, identifier)
@@ -58,6 +61,7 @@ async def validate_encounter(db, identifier, patient_id):
             raise HTTPException(409, "An open encounter for this patient is required")
 
 
+# Handle chart for this module.
 @router.get("/{patient_id}")
 async def chart(patient_id: str, db=Depends(db_session), actor=Depends(permit("clinical"))):
     await required(db, Patient, patient_id)
@@ -87,6 +91,7 @@ async def chart(patient_id: str, db=Depends(db_session), actor=Depends(permit("c
     return result
 
 
+# Handle addendum for this module.
 @router.post("/addenda", status_code=201)
 async def addendum(
     body: AddendumInput,
@@ -207,6 +212,7 @@ async def addendum(
     return serialize(addendum_row)
 
 
+# Retrieve list addenda for the current request or workflow.
 @router.get("/{record_type}/{identifier}/addenda")
 async def list_addenda(
     record_type: str,
@@ -228,6 +234,7 @@ async def list_addenda(
     return [serialize(row) for row in rows]
 
 
+# Handle entry for this module.
 @router.post("/entries", status_code=201)
 async def entry(body: ChartInput, db=Depends(db_session), actor=Depends(permit("clinical"))):
     patient = await required(db, Patient, body.patient_id)
@@ -237,6 +244,7 @@ async def entry(body: ChartInput, db=Depends(db_session), actor=Depends(permit("
     return serialize(row)
 
 
+# Handle perio for this module.
 @router.post("/perio", status_code=201)
 async def perio(body: PerioInput, db=Depends(db_session), actor=Depends(permit("clinical"))):
     patient = await required(db, Patient, body.patient_id)
@@ -246,6 +254,7 @@ async def perio(body: PerioInput, db=Depends(db_session), actor=Depends(permit("
     return serialize(row)
 
 
+# Handle encounter update for this module.
 @router.put("/encounters/{identifier}")
 async def encounter_update(
     identifier: str, body: EncounterInput, db=Depends(db_session), actor=Depends(permit("clinical"))
@@ -265,12 +274,14 @@ async def encounter_update(
     return serialize(row)
 
 
+# Handle encounter complete for this module.
 @router.post("/encounters/{identifier}/complete")
 async def encounter_complete(identifier: str, db=Depends(db_session), actor=Depends(permit("clinical"))):
     row = await required(db, Encounter, identifier, lock=True)
     return serialize(await close_encounter(db, actor, row))
 
 
+# Handle plan for this module.
 @router.post("/treatment-plans", status_code=201)
 async def plan(body: TreatmentInput, db=Depends(db_session), actor=Depends(permit("clinical"))):
     patient = await required(db, Patient, body.patient_id)
@@ -298,6 +309,7 @@ async def plan(body: TreatmentInput, db=Depends(db_session), actor=Depends(permi
     return serialize(row)
 
 
+# Handle accept for this module.
 @router.post("/treatment-plans/{identifier}/accept")
 async def accept(
     identifier: str, body: Acceptance, db=Depends(db_session), actor=Depends(permit("clinical"))

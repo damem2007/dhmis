@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the document model, contract, or value object.
 class Document(Record, Base):
     __tablename__ = "documents"
     __table_args__ = {"schema": "tenant"}

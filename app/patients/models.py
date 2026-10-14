@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the patient model, contract, or value object.
 class Patient(Record, Base):
     __tablename__ = "patients"
     __table_args__ = {"schema": "tenant"}
@@ -25,6 +26,7 @@ class Patient(Record, Base):
     archive_reason: Mapped[str] = mapped_column(String(1000), default="")
 
 
+# Defines the guardian link model, contract, or value object.
 class GuardianLink(Record, Base):
     __tablename__ = "guardian_links"
     __table_args__ = {"schema": "tenant"}

@@ -14,12 +14,14 @@ from app.organizations.tenant_resolution import normalize_slug
 ROOT = Path(__file__).resolve().parents[2]
 
 
+# Handle apply migrations for this module.
 def apply_migrations(connection, schema):
     config = Config(str(ROOT / "alembic.ini"))
     config.attributes.update(connection=connection, schema=schema)
     command.upgrade(config, "head")
 
 
+# Handle migrate schema for this module.
 async def migrate_schema(schema, database_alias="primary"):
     if schema != "dhmis_control":
         checked_schema(schema)
@@ -45,6 +47,7 @@ async def migrate_schema(schema, database_alias="primary"):
             await seed_tenant_super_admin(db)
 
 
+# Handle provision for this module.
 async def provision(name, organization_id=None, slug=None, region="CA", database_alias="primary"):
     identifier = organization_id or str(uuid4())
     schema = "dhmis_t_" + identifier.replace("-", "")
@@ -120,6 +123,7 @@ async def provision(name, organization_id=None, slug=None, region="CA", database
             )
 
 
+# Handle activate for this module.
 async def activate(identifier):
     async with control_session() as db:
         org = await db.get(Organization, identifier)
@@ -129,6 +133,7 @@ async def activate(identifier):
     return org
 
 
+# Handle migrate all for this module.
 async def migrate_all():
     await migrate_schema("dhmis_control")
     # A session-level run lock spans all tenant transactions, even a tenant failure.

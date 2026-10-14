@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the day surgery admission model, contract, or value object.
 class DaySurgeryAdmission(Record, Base):
     __tablename__ = "day_surgery_admissions"
     __table_args__ = {"schema": "tenant"}

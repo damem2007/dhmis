@@ -27,6 +27,7 @@ from app.rbac.runtime import conditions_from_record
 from app.rbac.registry import load_approved_registry
 
 
+# Handle condition values for this module.
 def condition_values(values: dict[str, Any]) -> dict[str, Any]:
     conditions = conditions_from_record(values)
     if conditions is None:
@@ -39,6 +40,7 @@ def condition_values(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Handle grant values for this module.
 def grant_values(item) -> dict[str, Any]:
     return {
         "permission_key": item.permission_key,
@@ -56,6 +58,7 @@ def is_protected_role(role) -> bool:
     return role.id in PROTECTED_ROLE_IDS
 
 
+# Validate or enforce assert unique name before the operation continues.
 async def assert_unique_name(db, role_model, name: str, exclude_id: str | None = None):
     query = select(role_model.id).where(
         func.lower(role_model.name) == name.strip().lower(),
@@ -67,6 +70,7 @@ async def assert_unique_name(db, role_model, name: str, exclude_id: str | None =
         raise HTTPException(409, "A non-archived role already uses this name")
 
 
+# Handle role payload for this module.
 async def role_payload(db, role, grant_model, assignment_model):
     grants = (
         await db.scalars(
@@ -129,6 +133,7 @@ async def role_payload(db, role, grant_model, assignment_model):
     }
 
 
+# Validate or enforce require role before the operation continues.
 async def require_role(db, role_model, identifier: str, *, lock: bool = False):
     query = select(role_model).where(role_model.id == identifier)
     if lock:
@@ -139,6 +144,7 @@ async def require_role(db, role_model, identifier: str, *, lock: bool = False):
     return role
 
 
+# Validate or enforce ensure mutable before the operation continues.
 def ensure_mutable(role, *, draft_only: bool = False):
     if is_protected_role(role):
         raise HTTPException(409, "Super Admin roles cannot be edited")
@@ -146,6 +152,7 @@ def ensure_mutable(role, *, draft_only: bool = False):
         raise HTTPException(409, "Published role changes require a governed change request")
 
 
+# Handle direct grants for this module.
 def direct_grants(items) -> dict[str, Grant]:
     return {
         item.permission_key: Grant(
@@ -157,6 +164,7 @@ def direct_grants(items) -> dict[str, Grant]:
     }
 
 
+# Handle clear unmet dependents for this module.
 def clear_unmet_dependents(role, context) -> tuple[dict[str, Grant], list[str]]:
     remaining = dict(role.grants)
     cleared: list[str] = []
@@ -196,6 +204,7 @@ def clear_unmet_dependents(role, context) -> tuple[dict[str, Grant], list[str]]:
             cleared.append(key)
 
 
+# Handle replace role grants for this module.
 async def replace_role_grants(
     db,
     role,
@@ -275,6 +284,7 @@ async def replace_role_grants(
     }
 
 
+# Handle role requires approval for this module.
 def role_requires_approval(role, context) -> tuple[bool, list[str]]:
     conflicts = find_conflicts(role, context)
     permissions = [
@@ -295,6 +305,7 @@ def role_requires_approval(role, context) -> tuple[bool, list[str]]:
     )
 
 
+# Handle assignment is high risk for this module.
 def assignment_is_high_risk(role, context) -> bool:
     return any(
         context.permissions[key].risk >= Risk.HIGH

@@ -36,6 +36,7 @@ from app.rbac.policy import (
 from app.rbac.registry import ApprovedRegistry, load_approved_registry
 
 
+# Handle approved permissions for this module.
 def approved_permissions(
     domain: Domain,
     registry: ApprovedRegistry | None = None,
@@ -48,6 +49,7 @@ def approved_permissions(
     }
 
 
+# Handle approved rules for this module.
 def approved_rules(registry: ApprovedRegistry | None = None) -> list[FourEyesRule]:
     approved = registry or load_approved_registry()
     return [
@@ -62,6 +64,7 @@ def approved_rules(registry: ApprovedRegistry | None = None) -> list[FourEyesRul
     ]
 
 
+# Handle approved sod rules for this module.
 def approved_sod_rules(registry: ApprovedRegistry | None = None) -> list[SoDRule]:
     approved = registry or load_approved_registry()
     return [
@@ -75,10 +78,12 @@ def approved_sod_rules(registry: ApprovedRegistry | None = None) -> list[SoDRule
     ]
 
 
+# Internal helper for condition value.
 def _condition_value(values: dict[str, Any], snake: str, camel: str):
     return values.get(snake, values.get(camel))
 
 
+# Handle conditions from record for this module.
 def conditions_from_record(values: dict[str, Any] | None) -> Conditions | None:
     if not values:
         return None
@@ -101,6 +106,7 @@ def conditions_from_record(values: dict[str, Any] | None) -> Conditions | None:
     )
 
 
+# Internal helper for roles from records.
 def _roles_from_records(role_rows, grant_rows, domain: Domain) -> dict[str, Role]:
     grants_by_role: dict[str, dict[str, Grant]] = {}
     for row in grant_rows:
@@ -127,6 +133,7 @@ def _roles_from_records(role_rows, grant_rows, domain: Domain) -> dict[str, Role
     }
 
 
+# Internal helper for context.
 def _context(domain: Domain, role_rows, grant_rows, rule_rows=None, sod_rows=None) -> PolicyContext:
     approved = load_approved_registry()
     return PolicyContext(
@@ -162,6 +169,7 @@ def _context(domain: Domain, role_rows, grant_rows, rule_rows=None, sod_rows=Non
     )
 
 
+# Handle tenant policy context for this module.
 async def tenant_policy_context(db) -> PolicyContext:
     roles = (await db.scalars(select(TenantRole))).all()
     grants = (await db.scalars(select(TenantRoleGrant))).all()
@@ -170,6 +178,7 @@ async def tenant_policy_context(db) -> PolicyContext:
     return _context(Domain.TENANT, roles, grants, rules, sod)
 
 
+# Handle platform policy context for this module.
 async def platform_policy_context(db) -> PolicyContext:
     roles = (await db.scalars(select(PlatformRole))).all()
     grants = (await db.scalars(select(PlatformRoleGrant))).all()
@@ -178,6 +187,7 @@ async def platform_policy_context(db) -> PolicyContext:
     return _context(Domain.PLATFORM, roles, grants, rules, sod)
 
 
+# Internal helper for assignment.
 def _assignment(row) -> Assignment:
     return Assignment(
         user_id=row.user_id,
@@ -188,6 +198,7 @@ def _assignment(row) -> Assignment:
     )
 
 
+# Handle tenant assignments for this module.
 async def tenant_assignments(
     db,
     user_id: str,
@@ -204,6 +215,7 @@ async def tenant_assignments(
     ]
 
 
+# Handle platform assignments for this module.
 async def platform_assignments(db, user_id: str) -> list[Assignment]:
     rows = (
         await db.scalars(
@@ -215,6 +227,7 @@ async def platform_assignments(db, user_id: str) -> list[Assignment]:
     return [_assignment(row) for row in rows]
 
 
+# Handle decide tenant for this module.
 async def decide_tenant(
     db,
     user_id: str,
@@ -235,6 +248,7 @@ async def decide_tenant(
     )
 
 
+# Handle decide platform for this module.
 async def decide_platform(
     db,
     user_id: str,

@@ -19,6 +19,7 @@ DEFAULT_BRANDING = (
 DEFAULT_LOGO_URL = "/assets/dhmis-logo-v2/svg/dhmis-lockup-website.svg"
 
 
+# Run the upgrade entry point for this module.
 def upgrade():
     schema = context.config.attributes["schema"]
     if schema == "dhmis_control":
@@ -41,5 +42,6 @@ def upgrade():
     )
 
 
+# Run the downgrade entry point for this module.
 def downgrade():
     raise RuntimeError("Use a reviewed forward migration")

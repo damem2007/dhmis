@@ -3,6 +3,7 @@ from datetime import date
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+# Defines the patient create model, contract, or value object.
 class PatientCreate(BaseModel):
     first_name: str = Field(min_length=1, max_length=80)
     last_name: str = Field(min_length=1, max_length=80)
@@ -12,6 +13,7 @@ class PatientCreate(BaseModel):
     allergies: list[str] = Field(default_factory=list, max_length=50)
     location_id: str
 
+    # Handle name not blank for this module.
     @field_validator("first_name", "last_name")
     @classmethod
     def name_not_blank(cls, value):
@@ -19,6 +21,7 @@ class PatientCreate(BaseModel):
             raise ValueError("Name must not be blank")
         return value.strip()
 
+    # Handle not future for this module.
     @field_validator("birth_date")
     @classmethod
     def not_future(cls, value):
@@ -30,6 +33,7 @@ class PatientCreate(BaseModel):
     dental_history: str = Field(default="", max_length=5000)
     alerts: list[str] = Field(default_factory=list, max_length=50)
 
+    # Handle contact required for this module.
     @model_validator(mode="after")
     def contact_required(self):
         if not self.email.strip() and not self.phone.strip():

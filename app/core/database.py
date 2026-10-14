@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.core.config import settings
 
 
+# Handle build engine for this module.
 def build_engine(raw_url):
     return create_async_engine(
         raw_url.replace("postgresql://", "postgresql+asyncpg://", 1),
@@ -26,6 +27,7 @@ engine = build_engine(settings().database_url.get_secret_value())
 _engines = {"primary": engine}
 
 
+# Handle engine for for this module.
 def engine_for(alias: str):
     if alias in _engines:
         return _engines[alias]
@@ -36,23 +38,27 @@ def engine_for(alias: str):
     return _engines[alias]
 
 
+# Handle dispose engines for this module.
 async def dispose_engines():
     for configured_engine in set(_engines.values()):
         await configured_engine.dispose()
 
 
+# Handle checked schema for this module.
 def checked_schema(schema: str) -> str:
     if not re.fullmatch(r"(?:dhmis_t_[a-f0-9]{32}|dhmis_template)", schema):
         raise ValueError("Invalid tenant schema")
     return schema
 
 
+# Handle control session for this module.
 @asynccontextmanager
 async def control_session():
     async with AsyncSession(engine, expire_on_commit=False) as session, session.begin():
         yield session
 
 
+# Handle tenant session for this module.
 @asynccontextmanager
 async def tenant_session(schema: str, database_alias: str = "primary"):
     checked_schema(schema)
@@ -63,6 +69,7 @@ async def tenant_session(schema: str, database_alias: str = "primary"):
             yield session
 
 
+# Handle organization session for this module.
 @asynccontextmanager
 async def organization_session(organization):
     async with tenant_session(

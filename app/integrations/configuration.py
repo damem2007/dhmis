@@ -40,6 +40,7 @@ async def effective_adapter_names(organization) -> dict[str, str]:
     return selected
 
 
+# Handle attach effective adapters for this module.
 async def attach_effective_adapters(organization) -> dict[str, str]:
     selected = await effective_adapter_names(organization)
     organization._effective_adapters = selected

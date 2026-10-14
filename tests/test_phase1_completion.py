@@ -16,6 +16,7 @@ from app.notifications.models import OutboxMessage
 from app.organizations.models import Organization
 
 
+# Exercise or prepare create invoice for this test module.
 async def create_invoice(client, tenant):
     response = await client.post(
         "/v1/billing/invoices",
@@ -26,6 +27,7 @@ async def create_invoice(client, tenant):
     return response.json()
 
 
+# Exercise or prepare test complete periodontal exam and comparison for this test module.
 async def test_complete_periodontal_exam_and_comparison(client, tenants):
     tenant = tenants[0]
     site = {
@@ -63,6 +65,7 @@ async def test_complete_periodontal_exam_and_comparison(client, tenants):
     assert chart.json()["perio_comparison"]["14"] == [2] * 6
 
 
+# Exercise or prepare test pediatric charting and treatment acceptance for this test module.
 async def test_pediatric_charting_and_treatment_acceptance(client, tenants):
     tenant = tenants[0]
     primary = await client.post(
@@ -126,6 +129,7 @@ async def test_pediatric_charting_and_treatment_acceptance(client, tenants):
     assert stored["status"] == "accepted_simulated"
 
 
+# Exercise or prepare test encounter completion captures charge for this test module.
 async def test_encounter_completion_captures_charge(client, tenants):
     tenant = tenants[0]
     starts = (datetime.now(timezone.utc) + timedelta(days=35)).replace(
@@ -172,6 +176,7 @@ async def test_encounter_completion_captures_charge(client, tenants):
     assert completed.json()["invoice_id"]
 
 
+# Exercise or prepare test recurring series and no show policy for this test module.
 async def test_recurring_series_and_no_show_policy(client, tenants):
     tenant = tenants[0]
     zone = ZoneInfo("America/Vancouver")
@@ -240,6 +245,7 @@ async def test_recurring_series_and_no_show_policy(client, tenants):
     assert restored_settings.status_code == 200, restored_settings.text
 
 
+# Exercise or prepare test fee versions preserve historical invoice prices for this test module.
 async def test_fee_versions_preserve_historical_invoice_prices(client, tenants):
     tenant = tenants[0]
     old = await create_invoice(client, tenant)
@@ -280,6 +286,7 @@ async def test_fee_versions_preserve_historical_invoice_prices(client, tenants):
     assert old["lines"][0]["fee_cents"] == 10000
 
 
+# Exercise or prepare test every financial posting is balanced for this test module.
 async def test_every_financial_posting_is_balanced(client, tenants):
     tenant = tenants[0]
     record = await create_invoice(client, tenant)
@@ -300,16 +307,21 @@ async def test_every_financial_posting_is_balanced(client, tenants):
         assert all(total == 0 for _, total in postings)
 
 
+# Exercise or prepare test provider registration and configuration only switch for this test module.
 async def test_provider_registration_and_configuration_only_switch(tenants):
     tenant = tenants[0]
 
+    # Defines the live payment adapter test fixture or helper type.
     class LivePaymentAdapter:
+        # Initialize the test helper instance.
         def __init__(self, context):
             self.context = context
 
+        # Exercise or prepare capture for this test module.
         async def capture(self, request):
             return PaymentResult("live-verification", request.amount_cents, sandbox=False)
 
+        # Exercise or prepare refund for this test module.
         async def refund(self, payment_reference, amount_cents, idempotency_key):
             return PaymentResult("live-refund", amount_cents, sandbox=False)
 
@@ -357,6 +369,7 @@ async def test_provider_registration_and_configuration_only_switch(tenants):
             override.provider_name = "sandbox"
 
 
+# Exercise or prepare test provider options are registry driven and platform managed for this test module.
 async def test_provider_options_are_registry_driven_and_platform_managed(client, tenants):
     response = await client.get(
         "/v1/organization/provider-options", headers=tenants[0]["headers"]
@@ -368,6 +381,7 @@ async def test_provider_options_are_registry_driven_and_platform_managed(client,
     assert choices["effective"]["payment_gateway"] == "sandbox"
 
 
+# Exercise or prepare test notification failure is persisted and retryable for this test module.
 async def test_notification_failure_is_persisted_and_retryable(client, tenants):
     tenant = tenants[0]
     async with control_session() as db:
@@ -419,6 +433,7 @@ async def test_notification_failure_is_persisted_and_retryable(client, tenants):
         override.provider_name = "sandbox"
 
 
+# Exercise or prepare test audit filter and export for this test module.
 async def test_audit_filter_and_export(client, tenants):
     tenant = tenants[0]
     await client.get(f"/v1/clinical/{tenant['patient'].id}", headers=tenant["headers"])

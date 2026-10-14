@@ -10,6 +10,7 @@ branch_labels = None
 depends_on = None
 
 
+# Run the upgrade entry point for this module.
 def upgrade():
     if context.config.attributes.get("schema") != "dhmis_control":
         return
@@ -22,6 +23,7 @@ def upgrade():
     )
 
 
+# Run the downgrade entry point for this module.
 def downgrade():
     if context.config.attributes.get("schema") != "dhmis_control":
         return

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.operations.models import ProviderCredential
 
 
+# Handle credential state for this module.
 async def credential_state(db, provider_id: str):
     rows = (
         await db.scalars(
@@ -29,6 +30,7 @@ async def credential_state(db, provider_id: str):
     ]
 
 
+# Validate or enforce require current credentials before the operation continues.
 async def require_current_credentials(db, provider_id: str):
     states = await credential_state(db, provider_id)
     expired = [row for row, state in states if state == "expired"]

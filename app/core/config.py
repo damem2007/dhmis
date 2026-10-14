@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 ROOT = Path(__file__).resolve().parents[3]
 
 
+# Defines the settings model, contract, or value object.
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
     database_url: SecretStr
@@ -40,16 +41,19 @@ class Settings(BaseSettings):
         "http://192.168.1.68:5175",
     ]
 
+    # Handle parse provider options for this module.
     @field_validator("provider_options", mode="before")
     @classmethod
     def parse_provider_options(cls, value):
         return cls.parse_json_object("PROVIDER_OPTIONS", value)
 
+    # Handle parse database aliases for this module.
     @field_validator("database_aliases", mode="before")
     @classmethod
     def parse_database_aliases(cls, value):
         return cls.parse_json_object("DATABASE_ALIASES", value)
 
+    # Handle parse json object for this module.
     @classmethod
     def parse_json_object(cls, name, value):
         if isinstance(value, dict):
@@ -67,6 +71,7 @@ class Settings(BaseSettings):
         return result
 
 
+# Handle settings for this module.
 @lru_cache
 def settings():
     return Settings()

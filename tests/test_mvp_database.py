@@ -17,6 +17,7 @@ from app.organizations.provisioning import migrate_schema
 from app.patients.models import Patient
 
 
+# Exercise or prepare invoice for this test module.
 async def invoice(client, tenant):
     response = await client.post(
         "/v1/billing/invoices",
@@ -27,6 +28,7 @@ async def invoice(client, tenant):
     return response.json()
 
 
+# Exercise or prepare test authentication and staff audience for this test module.
 async def test_authentication_and_staff_audience(client, tenants):
     t = tenants[0]
     assert (await client.get("/v1/patients")).status_code == 401
@@ -66,6 +68,7 @@ async def test_authentication_and_staff_audience(client, tenants):
     ).status_code == 401
 
 
+# Exercise or prepare test patient persistence and tenant boundary for this test module.
 async def test_patient_persistence_and_tenant_boundary(client, tenants):
     a, b = tenants
     result = await client.post(
@@ -101,6 +104,7 @@ async def test_patient_persistence_and_tenant_boundary(client, tenants):
     assert response.status_code == 404
 
 
+# Exercise or prepare test role denial is persisted for this test module.
 async def test_role_denial_is_persisted(client, tenants):
     t = tenants[0]
     response = await client.get(
@@ -111,6 +115,7 @@ async def test_role_denial_is_persisted(client, tenants):
         assert await db.scalar(select(AuditEvent).where(AuditEvent.action == "access.denied"))
 
 
+# Exercise or prepare test concurrent booking reschedule cancel and outbox for this test module.
 async def test_concurrent_booking_reschedule_cancel_and_outbox(client, tenants):
     t = tenants[0]
     start = (datetime.now(timezone.utc) + timedelta(days=30)).replace(
@@ -147,6 +152,7 @@ async def test_concurrent_booking_reschedule_cancel_and_outbox(client, tenants):
         assert len((await db.scalars(select(OutboxMessage))).all()) >= 2
 
 
+# Exercise or prepare test invoice payment replay and overpayment for this test module.
 async def test_invoice_payment_replay_and_overpayment(client, tenants):
     t = tenants[0]
     record = await invoice(client, t)
@@ -168,6 +174,7 @@ async def test_invoice_payment_replay_and_overpayment(client, tenants):
         assert sum(e.amount_cents for e in entries) == 7500
 
 
+# Exercise or prepare test claim reconciliation is idempotent for this test module.
 async def test_claim_reconciliation_is_idempotent(client, tenants):
     t = tenants[0]
     record = await invoice(client, t)
@@ -196,6 +203,7 @@ async def test_claim_reconciliation_is_idempotent(client, tenants):
         assert len(entries) == 2
 
 
+# Exercise or prepare test charting and draft perio for this test module.
 async def test_charting_and_draft_perio(client, tenants):
     t = tenants[0]
     response = await client.post(
@@ -239,6 +247,7 @@ async def test_charting_and_draft_perio(client, tenants):
     assert len(chart.json()["entries"]) >= 1
 
 
+# Exercise or prepare test consent simulation persists for this test module.
 async def test_consent_simulation_persists(client, tenants):
     t = tenants[0]
     response = await client.post(
@@ -255,6 +264,7 @@ async def test_consent_simulation_persists(client, tenants):
     assert response.json()["status"] == "simulated"
 
 
+# Exercise or prepare test audit cannot be updated for this test module.
 async def test_audit_cannot_be_updated(client, tenants):
     t = tenants[0]
     await client.get("/v1/patients", headers=t["headers"])
@@ -263,6 +273,7 @@ async def test_audit_cannot_be_updated(client, tenants):
             await db.execute(text("UPDATE audit_events SET action = :action"), {"action": "tamper"})
 
 
+# Exercise or prepare test migrations can be reapplied for this test module.
 async def test_migrations_can_be_reapplied(tenants):
     t = tenants[0]
     await migrate_schema(t["org"].schema_name)
@@ -271,6 +282,7 @@ async def test_migrations_can_be_reapplied(tenants):
         assert await db.get(Patient, t["patient"].id)
 
 
+# Exercise or prepare test dashboard uses saved records for this test module.
 async def test_dashboard_uses_saved_records(client, tenants):
     t = tenants[0]
     response = await client.get("/v1/dashboard", headers=t["headers"])

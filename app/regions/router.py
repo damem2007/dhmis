@@ -22,12 +22,14 @@ from app.regions.service import ensure_region_registry
 router = APIRouter(prefix="/platform/regions", tags=["Platform regions"])
 
 
+# Defines the region status input model, contract, or value object.
 class RegionStatusInput(BaseModel):
     enabled: bool
     reason: str = Field(min_length=10, max_length=1000)
     approval_request_id: str | None = Field(default=None, max_length=36)
 
 
+# Handle region status actor for this module.
 async def region_status_actor(
     request: Request,
     body: RegionStatusInput,
@@ -43,6 +45,7 @@ async def region_status_actor(
     )(request, actor)
 
 
+# Handle regions for this module.
 @router.get("")
 async def regions(
     actor: PlatformActor = Depends(
@@ -55,6 +58,7 @@ async def regions(
         return [serialize(row) for row in rows]
 
 
+# Handle region status for this module.
 @router.put("/{code}/status")
 async def region_status(
     code: str,

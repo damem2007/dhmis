@@ -23,6 +23,7 @@ TENANT_SUPER_ADMIN_ROLE_ID = "tenant-super-admin"
 APPROVAL_POLICY_ID = "approval-policy"
 
 
+# Handle default approval policy for this module.
 def default_approval_policy() -> dict:
     return {
         "require_role_grant_critical_or_four_eyes": True,
@@ -40,6 +41,7 @@ def default_approval_policy() -> dict:
     }
 
 
+# Handle seed rbac governance for this module.
 async def seed_rbac_governance(db, domain: str, actor_id: str = "rbac-bootstrap"):
     approved = load_approved_registry()
     if domain == "platform":
@@ -95,8 +97,35 @@ async def seed_rbac_governance(db, domain: str, actor_id: str = "rbac-bootstrap"
     await db.flush()
 
 
+# Handle seed platform super admin for this module.
 async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> PlatformRole:
+    from app.rbac.default_roles import default_platform_role_definitions
+
     await seed_rbac_governance(db, "platform", actor_id)
+    registry = load_approved_registry()
+    definition = default_platform_role_definitions().get(PLATFORM_SUPER_ADMIN_ROLE_ID)
+    if definition is None:
+        raise ValueError(
+            f"default_roles.json must define {PLATFORM_SUPER_ADMIN_ROLE_ID!r}"
+        )
+    configured_modules = set(definition.get("modules", ()))
+    active_platform_modules = {
+        permission.resource_key.split(".", 1)[0]
+        for permission in registry.permissions.values()
+        if permission.domain.value == "platform" and permission.reviewed and not permission.retired
+    }
+    unknown_modules = configured_modules - active_platform_modules
+    if unknown_modules:
+        raise ValueError(
+            "Platform Super Admin references unknown platform modules: "
+            + ", ".join(sorted(unknown_modules))
+        )
+    missing_modules = active_platform_modules - configured_modules
+    if missing_modules:
+        raise ValueError(
+            "default_roles.json is missing active platform modules: "
+            + ", ".join(sorted(missing_modules))
+        )
     role = await db.get(PlatformRole, PLATFORM_SUPER_ADMIN_ROLE_ID)
     if role is None:
         role = PlatformRole(
@@ -128,7 +157,7 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
             created_by=actor_id,
             updated_by=actor_id,
         )
-        for permission in load_approved_registry().permissions.values()
+        for permission in registry.permissions.values()
         if permission.domain.value == "platform"
         and permission.reviewed
         and not permission.retired
@@ -178,6 +207,7 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
     return role
 
 
+# Handle seed tenant super admin for this module.
 async def seed_tenant_super_admin(
     db,
     actor_id: str = "rbac-bootstrap",

@@ -16,6 +16,7 @@ from app.scheduling.models import Appointment
 from app.scheduling.policy import apply_change_policy
 
 
+# Handle book for this module.
 async def book(db, actor, body, existing_id=None):
     location = await required(db, Location, body.location_id)
     await required(db, Patient, body.patient_id)
@@ -115,6 +116,7 @@ async def book_series(db, actor, body):
     return rows
 
 
+# Apply the cancel booking lifecycle transition and its existing safeguards.
 async def cancel_booking(db, actor, identifier, reason):
     row = await required(db, Appointment, identifier, lock=True)
     if row.status == "cancelled":

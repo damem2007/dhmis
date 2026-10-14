@@ -8,6 +8,7 @@ from app.rbac.bootstrap import TENANT_SUPER_ADMIN_ROLE_ID
 from app.rbac.models import TenantRoleAssignment
 
 
+# Exercise or prepare ensure checker for this test module.
 async def ensure_checker(tenant):
     async with tenant_session(tenant["org"].schema_name) as db:
         existing = await db.scalar(
@@ -29,6 +30,7 @@ async def ensure_checker(tenant):
             )
 
 
+# Exercise or prepare remove checker for this test module.
 async def remove_checker(tenant):
     async with tenant_session(tenant["org"].schema_name) as db:
         assignment = await db.scalar(
@@ -42,6 +44,7 @@ async def remove_checker(tenant):
             await db.delete(assignment)
 
 
+# Exercise or prepare publish with checker for this test module.
 async def publish_with_checker(client, tenant, revision_id, payload):
     response = await client.post(
         f"/v1/cms/revisions/{revision_id}/publish",
@@ -65,6 +68,7 @@ async def publish_with_checker(client, tenant, revision_id, payload):
     return response
 
 
+# Exercise or prepare test draft preview blockers and atomic publication for this test module.
 async def test_draft_preview_blockers_and_atomic_publication(client, tenants):
     tenant = tenants[0]
     initial_public = await client.get(f"/v1/public/tenants/{tenant['org'].slug}")
@@ -281,6 +285,7 @@ async def test_draft_preview_blockers_and_atomic_publication(client, tenants):
     await remove_checker(tenant)
 
 
+# Exercise or prepare test rollback and location publication are explicit actions for this test module.
 async def test_rollback_and_location_publication_are_explicit_actions(client, tenants):
     tenant = tenants[0]
     revisions = await client.get("/v1/cms/revisions", headers=tenant["headers"])

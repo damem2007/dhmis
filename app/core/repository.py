@@ -3,10 +3,12 @@ from sqlalchemy import select
 from sqlalchemy.inspection import inspect
 
 
+# Handle serialize for this module.
 def serialize(record):
     return {column.key: getattr(record, column.key) for column in inspect(record).mapper.column_attrs}
 
 
+# Handle required for this module.
 async def required(db, model, identifier, lock=False):
     query = select(model).where(model.id == identifier)
     if lock:
@@ -17,6 +19,7 @@ async def required(db, model, identifier, lock=False):
     return result
 
 
+# Handle add for this module.
 async def add(db, model, values, actor):
     record = model(**values, created_by=actor, updated_by=actor)
     db.add(record)

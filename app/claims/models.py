@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the claim model, contract, or value object.
 class Claim(Record, Base):
     __tablename__ = "claims"
     __table_args__ = {"schema": "tenant"}
@@ -25,6 +26,7 @@ class Claim(Record, Base):
     discrepancy: Mapped[str] = mapped_column(String(500), default="")
 
 
+# Defines the insurance plan model, contract, or value object.
 class InsurancePlan(Record, Base):
     __tablename__ = "insurance_plans"
     __table_args__ = (CheckConstraint("coverage_pct >= 0 AND coverage_pct <= 100"), {"schema": "tenant"})

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the chart entry model, contract, or value object.
 class ChartEntry(Record, Base):
     __tablename__ = "chart_entries"
     __table_args__ = {"schema": "tenant"}
@@ -18,6 +19,7 @@ class ChartEntry(Record, Base):
     notes: Mapped[str] = mapped_column(String(4000), default="")
 
 
+# Defines the perio exam model, contract, or value object.
 class PerioExam(Record, Base):
     __tablename__ = "perio_exams"
     __table_args__ = {"schema": "tenant"}
@@ -29,6 +31,7 @@ class PerioExam(Record, Base):
     encounter_id: Mapped[str | None] = mapped_column(ForeignKey("tenant.encounters.id"), nullable=True)
 
 
+# Defines the encounter model, contract, or value object.
 class Encounter(Record, Base):
     __tablename__ = "encounters"
     __table_args__ = {"schema": "tenant"}
@@ -43,6 +46,7 @@ class Encounter(Record, Base):
     care_setting: Mapped[str] = mapped_column(String(30), default="outpatient")
 
 
+# Defines the treatment plan model, contract, or value object.
 class TreatmentPlan(Record, Base):
     __tablename__ = "treatment_plans"
     __table_args__ = {"schema": "tenant"}

@@ -9,6 +9,7 @@ branch_labels = None
 depends_on = None
 
 
+# Handle record columns for this module.
 def record_columns(default="migration-0015"):
     return [
         sa.Column("id", sa.String(36), primary_key=True),
@@ -19,6 +20,7 @@ def record_columns(default="migration-0015"):
     ]
 
 
+# Create or issue create governance while applying existing validation and authorization.
 def create_governance(schema: str, prefix: str):
     request_table = f"{prefix}_change_requests"
     decision_table = f"{prefix}_change_decisions"
@@ -122,11 +124,13 @@ def create_governance(schema: str, prefix: str):
     )
 
 
+# Run the upgrade entry point for this module.
 def upgrade():
     schema = context.config.attributes["schema"]
     create_governance(schema, "platform" if schema == "dhmis_control" else "tenant")
 
 
+# Run the downgrade entry point for this module.
 def downgrade():
     schema = context.config.attributes["schema"]
     prefix = "platform" if schema == "dhmis_control" else "tenant"

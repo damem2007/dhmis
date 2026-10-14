@@ -22,12 +22,17 @@ bearer = HTTPBearer(auto_error=False)
 # Legacy compatibility guards read default-role seed data; canonical RBAC grants are
 # the source of truth for new endpoints and staff assignment choices.
 ROLE_PERMISSIONS = {
-    item["name"]: set(item["modules"]) | set(item.get("compatibility_permissions", []))
+    item["name"]: (
+        set(item["modules"])
+        | set(item.get("compatibility_permissions", []))
+        | set(item.get("additional_permissions", []))
+    )
     for item in default_role_definitions()
 }
 ROLE_DEFINITIONS = {item["name"]: item for item in default_role_definitions()}
 
 
+# Handle staff user available for this module.
 def staff_user_available(user: StaffUser) -> bool:
     return bool(
         user.active
@@ -36,10 +41,12 @@ def staff_user_available(user: StaffUser) -> bool:
     )
 
 
+# Handle role has for this module.
 def role_has(role: str, permission: str) -> bool:
     return permission in ROLE_PERMISSIONS.get(role, set())
 
 
+# Handle user has module for this module.
 async def user_has_module(db, user: StaffUser, module: str) -> bool:
     if role_has(user.role, module):
         return True
@@ -61,6 +68,7 @@ async def user_has_module(db, user: StaffUser, module: str) -> bool:
     )
 
 
+# Determine whether is organization role.
 def is_organization_role(role: str) -> bool:
     return bool(ROLE_DEFINITIONS.get(role, {}).get("organization_scope"))
 
@@ -93,6 +101,7 @@ async def role_names_with_module(db, module: str) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+# Handle organization role names for this module.
 def organization_role_names() -> tuple[str, ...]:
     return tuple(
         name for name, definition in ROLE_DEFINITIONS.items()
@@ -100,6 +109,7 @@ def organization_role_names() -> tuple[str, ...]:
     )
 
 
+# Handle default role name for this module.
 def default_role_name(scope: str = "organization") -> str:
     candidates = (
         organization_role_names()
@@ -143,6 +153,7 @@ async def canonical_permission_allowed(request: Request, actor: "Actor", module:
     return False
 
 
+# Defines the actor model, contract, or value object.
 @dataclass
 class Actor:
     user_id: str
@@ -162,6 +173,7 @@ class Actor:
     modules: frozenset[str] = frozenset()
 
 
+# Create or issue issue token while applying existing validation and authorization.
 async def issue_token(db, user, organization, *, ttl_seconds: int | None = None):
     ttl_seconds = ttl_seconds if ttl_seconds is not None else settings().staff_session_ttl_seconds
     now = int(time.time())
@@ -185,6 +197,7 @@ async def issue_token(db, user, organization, *, ttl_seconds: int | None = None)
     )
 
 
+# Handle current actor for this module.
 async def current_actor(
     request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer)
 ):
@@ -272,6 +285,7 @@ async def current_actor(
         raise HTTPException(401, "Valid MFA-authenticated staff session required") from None
 
 
+# Handle db session for this module.
 async def db_session(actor: Actor = Depends(current_actor)):
     async with organization_session(actor.organization) as db:
         # SQLAlchemy loader criteria applies location visibility to reads and identity lookups.
@@ -279,7 +293,9 @@ async def db_session(actor: Actor = Depends(current_actor)):
         yield db
 
 
+# Handle permit for this module.
 def permit(permission):
+    # Handle guard for this module.
     async def guard(request: Request, actor: Actor = Depends(current_actor)):
         allowed = permission in ROLE_PERMISSIONS.get(actor.role, set())
         if not allowed:

@@ -25,6 +25,7 @@ router = APIRouter(prefix="/analytics", tags=["Role dashboards and analytics"])
 PERIODS = {"today", "yesterday", "week", "month", "quarter", "ytd", "custom"}
 
 
+# Handle date window for this module.
 def date_window(period: str, start: date | None, end: date | None):
     if period not in PERIODS:
         raise HTTPException(422, "Unknown analytics date range")
@@ -51,16 +52,19 @@ def date_window(period: str, start: date | None, end: date | None):
     return beginning, ending
 
 
+# Defines the action update model, contract, or value object.
 class ActionUpdate(BaseModel):
     status: str = Field(pattern="^(open|in_progress|resolved|dismissed|not_applicable)$")
     note: str = Field(default="", max_length=1000)
 
 
+# Handle catalogue for this module.
 @router.get("/catalogue")
 async def catalogue(actor=Depends(permit("analytics"))):
     return {"catalogue_version": "1.0", "metrics": public_catalogue()}
 
 
+# Handle role dashboard for this module.
 @router.get("/dashboard")
 async def role_dashboard(
     period: str = Query(default="today"),
@@ -108,6 +112,7 @@ async def role_dashboard(
     }
 
 
+# Handle actions for this module.
 @router.get("/actions")
 async def actions(
     status: str | None = Query(default=None, pattern="^(open|in_progress|resolved|dismissed|not_applicable)$"),
@@ -129,6 +134,7 @@ async def actions(
     }
 
 
+# Handle organization summary for this module.
 @router.get("/organization-summary")
 async def organization_summary(
     period: str = Query(default="month"),
@@ -155,6 +161,7 @@ async def organization_summary(
     return result
 
 
+# Update update action while preserving existing validation and audit behavior.
 @router.put("/actions/{identifier}")
 async def update_action(
     identifier: str,
@@ -186,6 +193,7 @@ async def update_action(
     return serialize(row)
 
 
+# Handle metric worklist for this module.
 @router.get("/worklists/{key}")
 async def metric_worklist(
     key: str,
@@ -223,6 +231,7 @@ async def metric_worklist(
     return result
 
 
+# Handle export metric worklist for this module.
 @router.get("/worklists/{key}/export")
 async def export_metric_worklist(
     key: str,

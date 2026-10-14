@@ -6,6 +6,7 @@ from app.core.repository import add
 from app.organizations.models import Location
 
 
+# Handle apply change policy for this module.
 async def apply_change_policy(db, actor, appointment, reason):
     location = await db.get(Location, appointment.location_id)
     policy = {**actor.settings.policy, **(location.policy if location else {})}

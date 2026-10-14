@@ -22,6 +22,7 @@ DEFAULT_SERVICE_ICONS = {
 }
 
 
+# Handle revision payload for this module.
 def revision_payload(row: CmsRevision) -> dict:
     return {
         "id": row.id,
@@ -49,6 +50,7 @@ async def lock_publication_state(db):
     )
 
 
+# Handle default content for this module.
 async def default_content(db, organization) -> dict:
     # CMS defaults are derived from the same tenant-owned catalogue used by
     # billing and clinical workflows. This also backfills older empty tenant
@@ -120,6 +122,7 @@ async def default_content(db, organization) -> dict:
     ).model_dump(mode="json")
 
 
+# Validate or enforce ensure draft before the operation continues.
 async def ensure_draft(db, organization, actor_id: str) -> CmsRevision:
     await lock_publication_state(db)
     draft = await db.scalar(
@@ -157,6 +160,7 @@ async def ensure_draft(db, organization, actor_id: str) -> CmsRevision:
     return draft
 
 
+# Update sync media while preserving existing validation and audit behavior.
 async def sync_media(
     db,
     revision: CmsRevision,
@@ -200,6 +204,7 @@ async def sync_media(
     await db.flush()
 
 
+# Handle consent valid for this module.
 def consent_valid(consent: dict) -> bool:
     return bool(
         consent.get("confirmed")
@@ -249,6 +254,7 @@ async def sync_catalog_services(db, content: dict) -> dict:
     return result
 
 
+# Handle preflight for this module.
 async def preflight(db, revision: CmsRevision, organization) -> dict:
     blockers: list[dict] = []
     content = CmsContentInput.model_validate(revision.content)
@@ -331,6 +337,7 @@ async def preflight(db, revision: CmsRevision, organization) -> dict:
     }
 
 
+# Handle published revision for this module.
 async def published_revision(db, location_id: str | None = None) -> CmsRevision | None:
     pointer = None
     if location_id:
@@ -346,6 +353,7 @@ async def published_revision(db, location_id: str | None = None) -> CmsRevision 
     return await db.get(CmsRevision, pointer.revision_id) if pointer else None
 
 
+# Handle public content for this module.
 def public_content(content: dict) -> dict:
     safe = CmsContentInput.model_validate(content).model_dump(mode="json")
     for asset in safe["media"]:
@@ -356,6 +364,7 @@ def public_content(content: dict) -> dict:
     return safe
 
 
+# Validate or enforce assert current before the operation continues.
 def assert_current(revision: CmsRevision, expected: str | None):
     if expected:
         try:
@@ -366,6 +375,7 @@ def assert_current(revision: CmsRevision, expected: str | None):
             raise HTTPException(409, "Draft changed; reload before saving or publishing")
 
 
+# Handle activate publication for this module.
 async def activate_publication(db, revision: CmsRevision, actor_id: str, publication_key: str):
     now = datetime.now(UTC)
     targets = (

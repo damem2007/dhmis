@@ -6,6 +6,7 @@ from app.core.repository import required
 from app.scheduling.models import Appointment
 
 
+# Handle close encounter for this module.
 async def close_encounter(db, actor, row, *, require_soap: bool = True):
     if row.status == "completed":
         return row

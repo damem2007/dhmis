@@ -25,6 +25,7 @@ from app.scheduling.service import book
 DEMO_ORG_ID = "d1100000-0000-4000-8000-000000000001"
 
 
+# Handle seed for this module.
 async def seed(org):
     if org.slug.startswith("tenant-"):
         from app.core.database import control_session

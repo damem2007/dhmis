@@ -17,6 +17,7 @@ from app.patients.models import Patient
 router = APIRouter(prefix="/claims", tags=["Sandbox claims"])
 
 
+# Defines the plan input model, contract, or value object.
 class PlanInput(BaseModel):
     patient_id: str
     payer_name: str = Field(min_length=2, max_length=160)
@@ -27,12 +28,14 @@ class PlanInput(BaseModel):
     waiting_until: AwareDatetime | None = None
 
 
+# Defines the submission model, contract, or value object.
 class Submission(BaseModel):
     invoice_id: str
     plan_id: str
     idempotency_key: str = Field(min_length=8, max_length=100)
 
 
+# Handle claims for this module.
 @router.get("")
 async def claims(db=Depends(db_session), actor=Depends(permit("claims"))):
     rows = (await db.scalars(select(Claim).order_by(Claim.created_at.desc()).limit(300))).all()
@@ -40,6 +43,7 @@ async def claims(db=Depends(db_session), actor=Depends(permit("claims"))):
     return [serialize(x) for x in rows]
 
 
+# Handle claims query for this module.
 @router.get("/query")
 async def claims_query(
     page: int = Query(default=1, ge=1),
@@ -101,6 +105,7 @@ async def claims_query(
     }
 
 
+# Handle plans for this module.
 @router.get("/plans/{patient_id}")
 async def plans(patient_id: str, db=Depends(db_session), actor=Depends(permit("patients"))):
     await required(db, Patient, patient_id)
@@ -115,6 +120,7 @@ async def plans(patient_id: str, db=Depends(db_session), actor=Depends(permit("p
     return [serialize(x) for x in rows]
 
 
+# Handle plan for this module.
 @router.post("/plans", status_code=201)
 async def plan(body: PlanInput, db=Depends(db_session), actor=Depends(permit("claims"))):
     patient = await required(db, Patient, body.patient_id, lock=True)
@@ -131,6 +137,7 @@ async def plan(body: PlanInput, db=Depends(db_session), actor=Depends(permit("cl
     return serialize(row)
 
 
+# Handle eligibility for this module.
 @router.post("/plans/{identifier}/eligibility")
 async def eligibility(identifier: str, db=Depends(db_session), actor=Depends(permit("patients"))):
     plan = await required(db, InsurancePlan, identifier)
@@ -148,6 +155,7 @@ async def eligibility(identifier: str, db=Depends(db_session), actor=Depends(per
     return result
 
 
+# Handle submit for this module.
 @router.post("", status_code=201)
 async def submit(body: Submission, db=Depends(db_session), actor=Depends(permit("claims"))):
     invoice = await required(db, Invoice, body.invoice_id, lock=True)
@@ -208,6 +216,7 @@ async def submit(body: Submission, db=Depends(db_session), actor=Depends(permit(
     return serialize(row)
 
 
+# Handle status for this module.
 @router.get("/{identifier}/status")
 async def status(identifier: str, db=Depends(db_session), actor=Depends(permit("claims"))):
     row = await required(db, Claim, identifier)
@@ -215,20 +224,24 @@ async def status(identifier: str, db=Depends(db_session), actor=Depends(permit("
     return await resolve(actor.organization, "claims_network").get_claim_status(row.reference, row.status)
 
 
+# Handle adjudicate for this module.
 @router.post("/{identifier}/adjudicate")
 async def adjudicate(identifier: str, db=Depends(db_session), actor=Depends(permit("claims"))):
     return serialize(await adjudicate_claim(db, actor, await required(db, Claim, identifier, lock=True)))
 
 
+# Handle reconcile for this module.
 @router.post("/{identifier}/reconcile")
 async def reconcile(identifier: str, db=Depends(db_session), actor=Depends(permit("claims"))):
     return serialize(await reconcile_claim(db, actor, await required(db, Claim, identifier, lock=True)))
 
 
+# Defines the appeal model, contract, or value object.
 class Appeal(BaseModel):
     reason: str = Field(min_length=5, max_length=500)
 
 
+# Handle appeal for this module.
 @router.post("/{identifier}/appeal")
 async def appeal(identifier: str, body: Appeal, db=Depends(db_session), actor=Depends(permit("claims"))):
     row = await required(db, Claim, identifier, lock=True)

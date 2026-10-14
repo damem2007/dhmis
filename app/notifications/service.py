@@ -45,6 +45,7 @@ async def deliver_message_now(db, actor, message: OutboxMessage, now=None) -> Ou
     return message
 
 
+# Handle dispatch for this module.
 async def dispatch(db, actor, now=None):
     now = now or datetime.now(timezone.utc)
     messages = (

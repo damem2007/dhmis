@@ -5,6 +5,7 @@ from app.rbac.bootstrap import TENANT_SUPER_ADMIN_ROLE_ID, seed_tenant_super_adm
 from app.rbac.models import TenantRoleAssignment, TenantRoleGrant
 
 
+# Internal test helper for seed record permissions.
 async def _seed_record_permissions(tenant):
     async with tenant_session(tenant["org"].schema_name) as db:
         await seed_tenant_super_admin(db, "record-governance-test")
@@ -48,6 +49,7 @@ async def _seed_record_permissions(tenant):
         )
 
 
+# Exercise or prepare test patient archive requires approval and hides from active list for this test module.
 async def test_patient_archive_requires_approval_and_hides_from_active_list(client, tenants):
     tenant = tenants[0]
     await _seed_record_permissions(tenant)
@@ -102,6 +104,7 @@ async def test_patient_archive_requires_approval_and_hides_from_active_list(clie
         archived.archive_reason = ""
 
 
+# Exercise or prepare test finalized encounter addendum preserves original for this test module.
 async def test_finalized_encounter_addendum_preserves_original(client, tenants):
     tenant = tenants[0]
     await _seed_record_permissions(tenant)

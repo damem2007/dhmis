@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.organizations.provisioning import provision
 
 
+# Exercise or prepare test region registry seeds ca us and blocks disabled onboarding for this test module.
 @pytest.mark.asyncio
 async def test_region_registry_seeds_ca_us_and_blocks_disabled_onboarding(client, tenants):
     headers = {"X-Bootstrap-Key": settings().bootstrap_key.get_secret_value()}

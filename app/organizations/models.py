@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.models import Base, Record
 
 
+# Defines the organization model, contract, or value object.
 class Organization(Record, Base):
     __tablename__ = "organizations"
     __table_args__ = {"schema": "dhmis_control"}
@@ -148,6 +149,7 @@ class TenantSettings(Record, Base):
     migration_state: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Defines the location model, contract, or value object.
 class Location(Record, Base):
     __tablename__ = "locations"
     __table_args__ = {"schema": "tenant"}
@@ -163,3 +165,4 @@ class Location(Record, Base):
     closing_hour: Mapped[int] = mapped_column(Integer, default=18)
     branding: Mapped[dict] = mapped_column(JSON, default=dict)
     policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)

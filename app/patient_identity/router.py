@@ -38,11 +38,13 @@ from app.scheduling.models import Appointment
 router = APIRouter(prefix="/portal", tags=["Patient identity"])
 
 
+# Defines the invite input model, contract, or value object.
 class InviteInput(BaseModel):
     patient_id: str
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
 
 
+# Defines the accept invite model, contract, or value object.
 class AcceptInvite(BaseModel):
     organization_id: str | None = None
     tenant_slug: str | None = None
@@ -50,6 +52,7 @@ class AcceptInvite(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+# Defines the login model, contract, or value object.
 class Login(BaseModel):
     organization_id: str | None = None
     tenant_slug: str | None = None
@@ -57,23 +60,27 @@ class Login(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+# Defines the verification request model, contract, or value object.
 class VerificationRequest(BaseModel):
     tenant_slug: str = Field(min_length=3, max_length=80)
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     appointment_reference: str | None = Field(default=None, min_length=8, max_length=80)
 
 
+# Defines the verification code model, contract, or value object.
 class VerificationCode(BaseModel):
     tenant_slug: str = Field(min_length=3, max_length=80)
     challenge_token: str = Field(min_length=20, max_length=200)
     code: str = Field(pattern=r"^\d{6}$")
 
 
+# Defines the password change model, contract, or value object.
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=12, max_length=128)
 
 
+# Create or issue create invite while applying existing validation and authorization.
 @router.post("/invites", status_code=201)
 async def create_invite(body: InviteInput, db=Depends(db_session), actor=Depends(permit("patients"))):
     patient = await required(db, Patient, body.patient_id)
@@ -82,6 +89,7 @@ async def create_invite(body: InviteInput, db=Depends(db_session), actor=Depends
     return await issue_patient_invite(db, patient, body.email, actor)
 
 
+# Handle patient invites for this module.
 @router.get("/invites/query")
 async def patient_invites(
     search: str | None = None,
@@ -140,6 +148,7 @@ async def patient_invites(
     }
 
 
+# Handle resend patient invite for this module.
 @router.post("/invites/{identifier}/resend", status_code=201)
 async def resend_patient_invite(
     identifier: str,
@@ -179,6 +188,7 @@ async def resend_patient_invite(
     return {"invite_id": replacement.id, "token": raw, "invitation_link": patient_invitation_url(raw, actor.organization.slug), "expires": replacement.expires}
 
 
+# Apply the revoke patient invite lifecycle transition and its existing safeguards.
 @router.post("/invites/{identifier}/revoke")
 async def revoke_patient_invite(
     identifier: str,
@@ -195,6 +205,7 @@ async def revoke_patient_invite(
     return {"revoked": True}
 
 
+# Handle accept invite for this module.
 @router.post("/auth/accept")
 async def accept_invite(body: AcceptInvite):
     if not await throttle("patient-invite:" + digest(body.token)):
@@ -225,6 +236,7 @@ async def accept_invite(body: AcceptInvite):
     return {"status": "created"}
 
 
+# Handle login for this module.
 @router.post("/auth/login")
 async def login(body: Login, request: Request):
     address = request.client.host if request.client else "unknown"
@@ -255,6 +267,7 @@ async def login(body: Login, request: Request):
     return {"access_token": token, "token_type": "bearer", "expires_in": 3600}
 
 
+# Create or issue request verification while applying existing validation and authorization.
 @router.post("/auth/verification/request", status_code=202)
 async def request_verification(body: VerificationRequest, request: Request):
     raw = secrets.token_urlsafe(32)
@@ -335,6 +348,7 @@ async def request_verification(body: VerificationRequest, request: Request):
     return {**generic, "challenge_token": raw}
 
 
+# Handle verify code for this module.
 @router.post("/auth/verification/verify")
 async def verify_code(body: VerificationCode):
     resolution = await resolve_organization(slug=body.tenant_slug, surface="portal")
@@ -379,6 +393,7 @@ async def verify_code(body: VerificationCode):
     return {"access_token": token, "token_type": "bearer", "expires_in": 3600}
 
 
+# Handle me for this module.
 @router.get("/me")
 async def me(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     patient = await required(db, Patient, actor.patient_id)
@@ -396,6 +411,7 @@ async def me(actor: PatientActor = Depends(current_patient), db=Depends(patient_
     }
 
 
+# Handle sessions for this module.
 @router.get("/auth/sessions")
 async def sessions(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     rows = (
@@ -417,6 +433,7 @@ async def sessions(actor: PatientActor = Depends(current_patient), db=Depends(pa
     ]
 
 
+# Apply the revoke other sessions lifecycle transition and its existing safeguards.
 @router.post("/auth/sessions/revoke-others")
 async def revoke_other_sessions(
     actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)
@@ -443,6 +460,7 @@ async def revoke_other_sessions(
     return {"revoked": len(rows)}
 
 
+# Update change password while preserving existing validation and audit behavior.
 @router.post("/auth/password")
 async def change_password(
     body: PasswordChange,
@@ -469,6 +487,7 @@ async def change_password(
     return {"changed": True, "sessions_revoked": len(rows)}
 
 
+# Handle logout for this module.
 @router.post("/auth/logout")
 async def logout(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
     session = await required(db, PatientSession, actor.session_id, lock=True)

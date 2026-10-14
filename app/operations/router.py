@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from app.core.audit import audit
 from app.core.database import control_session
 from app.core.repository import add, required, serialize
+from app.core.timezones import annotate_geocode_results
 from app.identity.models import StaffUser
 from app.identity.service import db_session, permit
 from app.integrations.contracts import IntegrationFailure
@@ -17,10 +18,12 @@ from app.operations.models import ProviderCredential
 from app.operations.service import credential_state
 from app.organizations.entitlements import require_location_capacity
 from app.organizations.models import Location
+from app.scheduling.models import Appointment
 
 router = APIRouter(prefix="/operations", tags=["Practice operations"])
 
 
+# Defines the credential input model, contract, or value object.
 class CredentialInput(BaseModel):
     provider_id: str
     location_id: str | None = None
@@ -32,6 +35,7 @@ class CredentialInput(BaseModel):
     alert_lead_days: int = Field(default=60, ge=1, le=365)
     required: bool = True
 
+    # Handle valid dates for this module.
     @model_validator(mode="after")
     def valid_dates(self):
         if self.expires_on <= self.issued_on:
@@ -39,6 +43,7 @@ class CredentialInput(BaseModel):
         return self
 
 
+# Defines the location input model, contract, or value object.
 class LocationInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     address: str = Field(default="", max_length=500)
@@ -52,6 +57,7 @@ class LocationInput(BaseModel):
     branding: dict[str, str] = Field(default_factory=dict)
     policy: dict[str, int] = Field(default_factory=dict)
 
+    # Handle valid location for this module.
     @model_validator(mode="after")
     def valid_location(self):
         if self.closing_hour <= self.opening_hour:
@@ -76,10 +82,12 @@ class LocationInput(BaseModel):
         return self
 
 
+# Handle credential result for this module.
 def credential_result(row, state):
     return {**serialize(row), "state": state}
 
 
+# Handle credentials for this module.
 @router.get("/credentials")
 async def credentials(
     provider_id: str | None = Query(default=None),
@@ -103,6 +111,7 @@ async def credentials(
     return [credential_result(row, state) for row, state in rows]
 
 
+# Handle credential alerts for this module.
 @router.get("/credential-alerts")
 async def credential_alerts(db=Depends(db_session), actor=Depends(permit("operations"))):
     records = (await db.scalars(select(ProviderCredential))).all()
@@ -122,7 +131,7 @@ async def search_location(
     q: str = Query(min_length=3, max_length=180),
     region: str = Query(default="CA", min_length=2, max_length=2, pattern="^[A-Za-z]{2}$"),
     detail: bool = Query(default=False),
-    actor=Depends(permit("settings")),
+    actor=Depends(permit("operations")),
 ):
     """Search the tenant's configured geocoding provider for a location address."""
 
@@ -150,11 +159,20 @@ async def search_location(
             enforce_live=False,
         )
         search = getattr(provider, "search_addresses", provider.search) if detail else provider.search
-        return await search(q, region.upper(), limit=5)
+        return annotate_geocode_results(await search(q, region.upper(), limit=5), region)
     except IntegrationFailure as error:
         raise HTTPException(502, str(error)) from error
 
 
+# Handle locations for this module.
+@router.get("/locations")
+async def locations(db=Depends(db_session), actor=Depends(permit("operations"))):
+    rows = (await db.scalars(select(Location).order_by(Location.active.desc(), Location.name, Location.id))).all()
+    audit(db, actor.user_id, "read", "locations", count=len(rows))
+    return [serialize(row) for row in rows]
+
+
+# Create or issue create credential while applying existing validation and authorization.
 @router.post("/credentials", status_code=201)
 async def create_credential(
     body: CredentialInput,
@@ -171,13 +189,16 @@ async def create_credential(
     return credential_result(row, current)
 
 
+# Create or issue create location while applying existing validation and authorization.
 @router.post("/locations", status_code=201)
 async def create_location(
     body: LocationInput,
     db=Depends(db_session),
-    actor=Depends(permit("settings")),
+    actor=Depends(permit("operations")),
 ):
-    current_count = await db.scalar(select(func.count()).select_from(Location)) or 0
+    current_count = await db.scalar(
+        select(func.count()).select_from(Location).where(Location.active.is_(True))
+    ) or 0
     await require_location_capacity(actor.organization.id, current_count)
     row = await add(db, Location, body.model_dump(), actor.user_id)
     audit(db, actor.user_id, "create", "locations", row.id)
@@ -185,12 +206,67 @@ async def create_location(
     return serialize(row)
 
 
+# Apply the deactivate location lifecycle transition and its existing safeguards.
+@router.post("/locations/{identifier}/deactivate")
+async def deactivate_location(
+    identifier: str,
+    db=Depends(db_session),
+    actor=Depends(permit("operations")),
+):
+    row = await required(db, Location, identifier, lock=True)
+    if not row.active:
+        return serialize(row)
+    future = await db.scalar(
+        select(func.count()).select_from(Appointment).where(
+            Appointment.location_id == row.id,
+            Appointment.starts_at > datetime.now(UTC),
+            Appointment.status.not_in(("cancelled", "no_show")),
+        )
+    ) or 0
+    if future:
+        raise HTTPException(
+            409,
+            {
+                "code": "LOCATION_HAS_FUTURE_APPOINTMENTS",
+                "message": f"Move or cancel {future} future appointment(s) before deactivating this location.",
+                "future_appointments": future,
+            },
+        )
+    row.active = False
+    row.updated_by = actor.user_id
+    audit(db, actor.user_id, "deactivate", "locations", row.id)
+    await db.flush()
+    return serialize(row)
+
+
+# Handle reactivate location for this module.
+@router.post("/locations/{identifier}/reactivate")
+async def reactivate_location(
+    identifier: str,
+    db=Depends(db_session),
+    actor=Depends(permit("operations")),
+):
+    row = await required(db, Location, identifier, lock=True)
+    if row.active:
+        return serialize(row)
+    current_count = await db.scalar(
+        select(func.count()).select_from(Location).where(Location.active.is_(True))
+    ) or 0
+    await require_location_capacity(actor.organization.id, current_count)
+    row.active = True
+    row.updated_by = actor.user_id
+    audit(db, actor.user_id, "reactivate", "locations", row.id)
+    await db.flush()
+    return serialize(row)
+
+
+# Update update location while preserving existing validation and audit behavior.
 @router.put("/locations/{identifier}")
 async def update_location(
     identifier: str,
     body: LocationInput,
     db=Depends(db_session),
-    actor=Depends(permit("settings")),
+    actor=Depends(permit("operations")),
 ):
     row = await required(db, Location, identifier, lock=True)
     for key, value in body.model_dump().items():

@@ -17,6 +17,7 @@ from app.billing.models import Invoice
 from app.core.audit import audit
 from app.core.database import control_session, organization_session
 from app.core.repository import add, required, serialize
+from app.core.timezones import annotate_geocode_results
 from app.identity.access import invite_assignments, user_assignments
 from app.identity.models import (
     StaffInvite,
@@ -72,13 +73,14 @@ from app.organizations.tenant_resolution import (
     normalize_slug,
     organization_from_login,
 )
-from app.platform_identity.delivery import enqueue_platform_email
+from app.platform_identity.delivery import enqueue_platform_email, enqueue_platform_notification
 from app.platform_identity.models import (
     PlatformAuditEvent,
     PlatformInvite,
     PlatformOutboxMessage,
     PlatformPasswordResetChallenge,
     PlatformSession,
+    PlatformSupportTicket,
     PlatformUser,
 )
 from app.platform_identity.service import PlatformActor, platform_audit, platform_or_bootstrap
@@ -105,6 +107,7 @@ from app.rbac.workflow import (
 )
 
 router = APIRouter(tags=["Organization administration"])
+# Defines the onboarding model, contract, or value object.
 class Onboarding(BaseModel):
     organization_id: UUID | None = None
     name: str = Field(min_length=2, max_length=160)
@@ -115,6 +118,7 @@ class Onboarding(BaseModel):
     location_latitude: float | None = Field(default=None, ge=-90, le=90)
     location_longitude: float | None = Field(default=None, ge=-180, le=180)
     location_osm_place_id: str = Field(default="", max_length=120)
+    location_timezone: str = Field(default="America/Vancouver", min_length=2, max_length=60)
     admin_name: str = Field(min_length=2, max_length=160)
     admin_email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     visibility: str = Field(pattern="^(organization|location)$", default="organization")
@@ -124,9 +128,14 @@ class Onboarding(BaseModel):
     booking_enabled: bool = True
     patient_portal_enabled: bool = True
 
+    # Handle routing for this module.
     @model_validator(mode="after")
     def routing(self):
         self.slug = normalize_slug(self.slug)
+        try:
+            ZoneInfo(self.location_timezone)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("Unknown location timezone") from error
         for binding in self.domains:
             if set(binding) != {"hostname", "surface"} or binding["surface"] not in {
                 "back-office", "public", "portal"
@@ -136,6 +145,7 @@ class Onboarding(BaseModel):
         return self
 
 
+# Defines the plan entitlement input model, contract, or value object.
 class PlanEntitlementInput(BaseModel):
     key: str = Field(min_length=3, max_length=120)
     enabled: bool = True
@@ -145,6 +155,7 @@ class PlanEntitlementInput(BaseModel):
     public_label: str = Field(default="", max_length=180)
 
 
+# Defines the platform plan input model, contract, or value object.
 class PlatformPlanInput(BaseModel):
     code: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     name: str = Field(min_length=2, max_length=120)
@@ -159,6 +170,32 @@ class PlatformPlanInput(BaseModel):
     active: bool = True
 
 
+class PlatformSupportTicketInput(BaseModel):
+    """Payload for creating a Support-owned ticket from platform modules."""
+
+    tenant_id: UUID
+    source: str = Field(default="billing", min_length=2, max_length=40)
+    subscription_id: str | None = Field(default=None, max_length=36)
+    category: str = Field(default="Billing", min_length=2, max_length=80)
+    priority: str = Field(default="normal", pattern=r"^(low|normal|high|urgent)$")
+    subject: str = Field(min_length=1, max_length=240)
+    description: str = Field(min_length=1, max_length=4000)
+    context: dict = Field(default_factory=dict)
+
+
+class PlatformSupportTicketUpdate(BaseModel):
+    """Support-owned lifecycle changes shared with the originating module."""
+
+    action: str | None = Field(default=None, pattern=r"^(assign|unassign|status|note|resolve|close|reopen)$")
+    status: str | None = Field(default=None, pattern=r"^(open|in_progress|pending|resolved|closed)$")
+    priority: str | None = Field(default=None, pattern=r"^(low|normal|high|urgent)$")
+    assignee_id: UUID | None = None
+    resolution_code: str | None = Field(default=None, max_length=60)
+    resolution_note: str | None = Field(default=None, max_length=2000)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+# Defines the platform feature input model, contract, or value object.
 class PlatformFeatureInput(BaseModel):
     key: str = Field(min_length=3, max_length=120, pattern=r"^[a-z0-9][a-z0-9_.-]*$")
     name: str = Field(min_length=2, max_length=160)
@@ -169,6 +206,7 @@ class PlatformFeatureInput(BaseModel):
     active: bool = True
 
 
+# Defines the subscription input model, contract, or value object.
 class SubscriptionInput(BaseModel):
     plan_code: str = Field(min_length=2, max_length=80)
     status: str = Field(default="trialing", pattern=r"^(trialing|active|paused|past_due|canceled)$")
@@ -179,11 +217,13 @@ class SubscriptionInput(BaseModel):
     external_reference: str = Field(default="", max_length=180)
 
 
+# Defines the access assignment input model, contract, or value object.
 class AccessAssignmentInput(BaseModel):
     role: str
     location_id: str | None = None
     scope: str = Field(default="location", pattern="^(location|organization)$")
 
+    # Handle valid scope for this module.
     @model_validator(mode="after")
     def valid_scope(self):
         if (self.scope == "organization") != (self.location_id is None):
@@ -214,6 +254,7 @@ async def assignment_role_scopes(db, role_name: str) -> set[str]:
     return set()
 
 
+# Validate or enforce validate assignment role before the operation continues.
 async def validate_assignment_role(db, assignment: AccessAssignmentInput) -> None:
     scopes = await assignment_role_scopes(db, assignment.role)
     if not scopes:
@@ -222,6 +263,7 @@ async def validate_assignment_role(db, assignment: AccessAssignmentInput) -> Non
         raise HTTPException(422, f"This role does not allow {assignment.scope} scope")
 
 
+# Defines the invite input model, contract, or value object.
 class InviteInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
@@ -231,6 +273,7 @@ class InviteInput(BaseModel):
     assignments: list[AccessAssignmentInput] = Field(default_factory=list)
 
 
+# Handle assignment inputs for this module.
 def assignment_inputs(body) -> list[AccessAssignmentInput]:
     if body.assignments:
         return body.assignments
@@ -242,6 +285,7 @@ def assignment_inputs(body) -> list[AccessAssignmentInput]:
     ] or [AccessAssignmentInput(role=body.role, scope="organization")]
 
 
+# Defines the accept invite model, contract, or value object.
 class AcceptInvite(BaseModel):
     organization_id: str | None = None
     tenant_slug: str | None = None
@@ -250,10 +294,12 @@ class AcceptInvite(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+# Defines the database cutover model, contract, or value object.
 class DatabaseCutover(BaseModel):
     target_alias: str = Field(min_length=2, max_length=80)
 
 
+# Defines the routing configuration model, contract, or value object.
 class RoutingConfiguration(BaseModel):
     slug: str = Field(min_length=3, max_length=80)
     domains: list[dict[str, str]] = Field(default_factory=list)
@@ -261,6 +307,7 @@ class RoutingConfiguration(BaseModel):
     booking_enabled: bool
     patient_portal_enabled: bool
 
+    # Validate or enforce validate routing before the operation continues.
     @model_validator(mode="after")
     def validate_routing(self):
         self.slug = normalize_slug(self.slug)
@@ -273,6 +320,7 @@ class RoutingConfiguration(BaseModel):
         return self
 
 
+# Defines the platform location input model, contract, or value object.
 class PlatformLocationInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     address: str = Field(default="", max_length=500)
@@ -284,6 +332,7 @@ class PlatformLocationInput(BaseModel):
     opening_hour: int = Field(default=8, ge=0, le=23)
     closing_hour: int = Field(default=18, ge=1, le=24)
 
+    # Validate or enforce validate location before the operation continues.
     @model_validator(mode="after")
     def validate_location(self):
         if self.closing_hour <= self.opening_hour:
@@ -299,6 +348,7 @@ class PlatformLocationInput(BaseModel):
         return self
 
 
+# Defines the recovery action model, contract, or value object.
 class RecoveryAction(BaseModel):
     staff_email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     action: str = Field(pattern="^(unlock|reset_mfa|password_reset)$")
@@ -306,6 +356,7 @@ class RecoveryAction(BaseModel):
     approval_request_id: str | None = Field(default=None, max_length=36)
 
 
+# Handle platform recovery actor for this module.
 async def platform_recovery_actor(
     request: Request,
     body: RecoveryAction,
@@ -322,6 +373,7 @@ async def platform_recovery_actor(
     )(request, actor)
 
 
+# Defines the policy model, contract, or value object.
 class Policy(BaseModel):
     cancellation_notice_hours: int = Field(ge=0, le=168, default=24)
     cancellation_fee_cents: int = Field(ge=0, le=100000, default=0)
@@ -329,12 +381,14 @@ class Policy(BaseModel):
     reminder_hours: int = Field(ge=1, le=168, default=24)
 
 
+# Defines the public content model, contract, or value object.
 class PublicContent(BaseModel):
     contact_phone: str = Field(default="", max_length=40)
     contact_email: str = Field(default="", max_length=254)
     address: str = Field(default="", max_length=500)
 
 
+# Defines the booking widget configuration model, contract, or value object.
 class BookingWidgetConfiguration(BaseModel):
     accent_color: str = Field(default="#356b5d", pattern=r"^#[0-9a-fA-F]{6}$")
     default_location_id: str = Field(default="", max_length=36)
@@ -343,6 +397,7 @@ class BookingWidgetConfiguration(BaseModel):
     allowed_provider_ids: list[str] = Field(default_factory=list)
     allowed_origins: list[str] = Field(default_factory=list, max_length=20)
 
+    # Validate or enforce validate lists before the operation continues.
     @model_validator(mode="after")
     def validate_lists(self):
         for values in (
@@ -359,6 +414,7 @@ class BookingWidgetConfiguration(BaseModel):
         return self
 
 
+# Defines the org settings model, contract, or value object.
 class OrgSettings(BaseModel):
     visibility: str = Field(pattern="^(organization|location)$")
     branding: dict[str, str] = Field(default_factory=dict)
@@ -368,6 +424,7 @@ class OrgSettings(BaseModel):
     public_content: PublicContent | None = None
     booking_widget: BookingWidgetConfiguration | None = None
 
+    # Handle safe config for this module.
     @model_validator(mode="after")
     def safe_config(self):
         allowed = {
@@ -403,11 +460,13 @@ class OrgSettings(BaseModel):
         return self
 
 
+# Defines the adapter request input model, contract, or value object.
 class AdapterRequestInput(BaseModel):
     capability: str = Field(min_length=2, max_length=80)
     provider_name: str = Field(min_length=2, max_length=120)
     reason: str = Field(min_length=10, max_length=1000)
 
+    # Handle known provider for this module.
     @model_validator(mode="after")
     def known_provider(self):
         if self.provider_name not in REGISTRY.get(self.capability, {}):
@@ -415,12 +474,14 @@ class AdapterRequestInput(BaseModel):
         return self
 
 
+# Defines the adapter decision model, contract, or value object.
 class AdapterDecision(BaseModel):
     status: str = Field(pattern="^(approved|rejected)$")
     reason: str = Field(min_length=10, max_length=1000)
     approval_request_id: str | None = Field(default=None, max_length=36)
 
 
+# Handle integration request actor for this module.
 async def integration_request_actor(
     request: Request,
     body: AdapterDecision,
@@ -437,6 +498,7 @@ async def integration_request_actor(
     )(request, actor)
 
 
+# Defines the adapter default input model, contract, or value object.
 class AdapterDefaultInput(BaseModel):
     region: str = Field(pattern=r"^(\*|[A-Z]{2})$")
     capability: str = Field(min_length=2, max_length=80)
@@ -445,6 +507,7 @@ class AdapterDefaultInput(BaseModel):
     reason: str = Field(min_length=8, max_length=1000)
     approval_request_id: str | None = Field(default=None, max_length=36)
 
+    # Handle known provider for this module.
     @model_validator(mode="after")
     def known_provider(self):
         if self.provider_name not in REGISTRY.get(self.capability, {}):
@@ -452,11 +515,13 @@ class AdapterDefaultInput(BaseModel):
         return self
 
 
+# Defines the tenant activation input model, contract, or value object.
 class TenantActivationInput(BaseModel):
     reason: str = Field(default="Activate tenant after onboarding", min_length=8, max_length=1000)
     approval_request_id: str | None = Field(default=None, max_length=36)
 
 
+# Defines the communication template input model, contract, or value object.
 class CommunicationTemplateInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     channel: str = Field(pattern="^(email|sms)$")
@@ -464,6 +529,7 @@ class CommunicationTemplateInput(BaseModel):
     body: str = Field(min_length=2, max_length=4000)
     active: bool = True
 
+    # Handle supported variables for this module.
     @model_validator(mode="after")
     def supported_variables(self):
         allowed = set(COMMUNICATION_TEMPLATE_VARIABLES)
@@ -473,31 +539,37 @@ class CommunicationTemplateInput(BaseModel):
         return self
 
 
+# Defines the platform defaults input model, contract, or value object.
 class PlatformDefaultsInput(BaseModel):
     default_visibility: str = Field(pattern="^(organization|location)$")
     default_policy: Policy
 
 
+# Defines the platform invite input model, contract, or value object.
 class PlatformInviteInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
     role: str = Field(default="platform-super-admin", min_length=1, max_length=160)
 
 
+# Defines the platform user status input model, contract, or value object.
 class PlatformUserStatusInput(BaseModel):
     active: bool
 
 
+# Defines the platform password reset input model, contract, or value object.
 class PlatformPasswordResetInput(BaseModel):
     reason: str = Field(min_length=10, max_length=1000)
 
 
+# Handle staff invitation url for this module.
 def staff_invitation_url(raw_token: str, tenant_slug: str) -> str:
     from app.core.config import settings
     base = settings().tenant_admin_public_url_template.format(tenant_slug=tenant_slug).rstrip("/")
     return f"{base}/?invite={quote(raw_token, safe='')}"
 
 
+# Handle invite for this module.
 async def invite(db, body, actor, clinic_name="your clinic", *, delivery_actor=None, tenant_slug=""):
     assignments = assignment_inputs(body)
     assignment_keys = [(item.scope, item.location_id) for item in assignments]
@@ -595,6 +667,7 @@ async def invite(db, body, actor, clinic_name="your clinic", *, delivery_actor=N
     return {"invite_id": record.id, "token": raw, "invitation_link": staff_invitation_url(raw, tenant_slug), "expires_in": 86400}
 
 
+# Handle onboarding for this module.
 @router.post("/platform/organizations", status_code=201)
 async def onboarding(
     body: Onboarding,
@@ -651,6 +724,7 @@ async def onboarding(
                     "latitude": body.location_latitude,
                     "longitude": body.location_longitude,
                     "osm_place_id": body.location_osm_place_id,
+                    "timezone": body.location_timezone,
                 },
                 "platform",
             )
@@ -740,11 +814,12 @@ async def search_location(
             enforce_live=False,
         )
         search = getattr(provider, "search_addresses", provider.search) if detail else provider.search
-        return await search(q, region.upper(), limit=5)
+        return annotate_geocode_results(await search(q, region.upper(), limit=5), region)
     except IntegrationFailure as error:
         raise HTTPException(502, str(error)) from error
 
 
+# Handle organization locations for this module.
 @router.get("/platform/organizations/{identifier}/locations")
 async def organization_locations(
     identifier: str,
@@ -762,6 +837,7 @@ async def organization_locations(
         return [serialize(row) for row in rows]
 
 
+# Update update organization location while preserving existing validation and audit behavior.
 @router.put("/platform/organizations/{identifier}/locations/{location_id}")
 async def update_organization_location(
     identifier: str,
@@ -802,7 +878,9 @@ async def create_organization_location(
     if organization is None:
         raise HTTPException(404, "Organization not found")
     async with organization_session(organization) as db:
-        current_count = await db.scalar(select(func.count()).select_from(Location)) or 0
+        current_count = await db.scalar(
+            select(func.count()).select_from(Location).where(Location.active.is_(True))
+        ) or 0
         await require_location_capacity(identifier, current_count)
         row = await add(db, Location, body.model_dump(), actor.user_id)
         audit(db, actor.user_id, "create", "locations", row.id)
@@ -810,6 +888,7 @@ async def create_organization_location(
         return serialize(row)
 
 
+# Handle platform organizations for this module.
 @router.get("/platform/organizations")
 async def platform_organizations(actor: PlatformActor = Depends(permit_platform_or_bootstrap("organizations.organization_tenant_record.read"))):
     async with control_session() as db:
@@ -985,6 +1064,7 @@ async def activate_organization(
     return {"organization_id": organization.id, "status": "active", "changed": True}
 
 
+# Handle platform organizations query for this module.
 @router.get("/platform/organizations/query")
 async def platform_organizations_query(
     search: str | None = Query(default=None, max_length=160),
@@ -1064,6 +1144,7 @@ async def platform_organizations_query(
         }
 
 
+# Handle platform audit events for this module.
 @router.get("/platform/audit")
 async def platform_audit_events(actor: PlatformActor = Depends(permit_platform_or_bootstrap("audit.platform_audit_events.read"))):
     async with control_session() as db:
@@ -1089,6 +1170,7 @@ async def platform_audit_events(actor: PlatformActor = Depends(permit_platform_o
         ]
 
 
+# Handle platform audit query for this module.
 @router.get("/platform/audit/query")
 async def platform_audit_query(
     search: str | None = Query(default=None, max_length=160),
@@ -1135,6 +1217,7 @@ async def platform_audit_query(
         }
 
 
+# Handle platform integration status for this module.
 @router.get("/platform/integrations/status")
 async def platform_integration_status(actor: PlatformActor = Depends(permit_platform_or_bootstrap("platform_ops.integration_provider_health.read"))):
     async with control_session() as db:
@@ -1180,6 +1263,7 @@ async def platform_integration_status(actor: PlatformActor = Depends(permit_plat
         return result
 
 
+# Handle platform jobs for this module.
 @router.get("/platform/jobs")
 async def platform_jobs(
     include_tenants: bool = Query(default=False),
@@ -1307,6 +1391,7 @@ async def platform_jobs(
     }
 
 
+# Handle platform plan payload for this module.
 def platform_plan_payload(plan: PlatformPlan) -> dict:
     features = plan.features or []
     if isinstance(features, str):
@@ -1329,6 +1414,7 @@ def platform_plan_payload(plan: PlatformPlan) -> dict:
     }
 
 
+# Handle platform plan payload with entitlements for this module.
 async def platform_plan_payload_with_entitlements(db, plan: PlatformPlan) -> dict:
     payload = platform_plan_payload(plan)
     rows = (
@@ -1361,6 +1447,7 @@ async def platform_plan_payload_with_entitlements(db, plan: PlatformPlan) -> dic
     return payload
 
 
+# Update sync plan entitlements while preserving existing validation and audit behavior.
 async def sync_plan_entitlements(db, plan: PlatformPlan, entitlements: list[PlanEntitlementInput] | None, actor_id: str):
     if entitlements is None:
         return
@@ -1389,6 +1476,348 @@ async def sync_plan_entitlements(db, plan: PlatformPlan, entitlements: list[Plan
         ))
 
 
+SUPPORT_TICKET_TRANSITIONS = {
+    "open": {"open", "in_progress", "pending", "resolved", "closed"},
+    "in_progress": {"open", "in_progress", "pending", "resolved", "closed"},
+    "pending": {"open", "in_progress", "pending", "resolved", "closed"},
+    "resolved": {"open", "resolved", "closed"},
+    "closed": {"open", "closed"},
+}
+
+
+# Internal helper for ticket event.
+def _ticket_event(ticket: PlatformSupportTicket, actor_id: str, kind: str, **details):
+    context = dict(ticket.context or {})
+    events = list(context.get("events") or [])
+    events.append({"kind": kind, "actor_id": actor_id, "at": datetime.now(UTC).isoformat(), **details})
+    context["events"] = events[-100:]
+    ticket.context = context
+
+
+# Internal helper for ticket payload.
+def _ticket_payload(ticket: PlatformSupportTicket, organizations: dict[str, Organization], users: dict[str, PlatformUser]):
+    context = ticket.context or {}
+    return {
+        "id": ticket.id,
+        "organization_id": ticket.organization_id,
+        "organization_name": organizations.get(ticket.organization_id).name if ticket.organization_id in organizations else "Unknown tenant",
+        "source": ticket.source,
+        "subscription_id": ticket.subscription_id,
+        "category": ticket.category,
+        "priority": ticket.priority,
+        "subject": ticket.subject,
+        "description": ticket.description,
+        "status": ticket.status,
+        "assignee_id": ticket.assignee_id,
+        "assignee_name": users.get(ticket.assignee_id).name if ticket.assignee_id and ticket.assignee_id in users else None,
+        "resolution_code": ticket.resolution_code,
+        "resolution_note": ticket.resolution_note,
+        "resolved_at": ticket.resolved_at,
+        "closed_at": ticket.closed_at,
+        "events": context.get("events") or [],
+        "created_at": ticket.created_at,
+        "updated_at": ticket.updated_at,
+    }
+
+
+@router.get("/platform/support/tickets")
+async def platform_support_tickets(
+    tenant_id: UUID | None = Query(default=None),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("support.tenant_support_case.read")),
+):
+    """Read Support-owned tickets for a tenant; billing remains read-only."""
+
+    async with control_session() as db:
+        organization = await db.get(Organization, str(tenant_id)) if tenant_id else None
+        if tenant_id and organization is None:
+            raise HTTPException(404, "Organization not found")
+        query = select(PlatformSupportTicket).order_by(PlatformSupportTicket.created_at.desc())
+        if organization is not None:
+            query = query.where(PlatformSupportTicket.organization_id == organization.id)
+        rows = (await db.scalars(query)).all()
+        organization_ids = {ticket.organization_id for ticket in rows}
+        organizations = {
+            row.id: row
+            for row in (await db.scalars(select(Organization).where(Organization.id.in_(organization_ids)))).all()
+        } if organization_ids else {}
+        assignee_ids = {ticket.assignee_id for ticket in rows if ticket.assignee_id}
+        users = {
+            row.id: row
+            for row in (await db.scalars(select(PlatformUser).where(PlatformUser.id.in_(assignee_ids)))).all()
+        } if assignee_ids else {}
+        platform_audit(
+            db,
+            actor.user_id,
+            "support.tickets.read",
+            organization_id=organization.id if organization else None,
+            details={"count": len(rows), "source": "support" if tenant_id is None else "billing"},
+        )
+        return [_ticket_payload(row, organizations, users) for row in rows]
+
+
+@router.post("/platform/support/tickets", status_code=201)
+async def create_platform_support_ticket(
+    body: PlatformSupportTicketInput,
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("support.tenant_support_case.create")),
+):
+    """Create a Support-owned ticket initiated by Billing or another module."""
+
+    async with control_session() as db:
+        organization = await db.get(Organization, str(body.tenant_id))
+        if organization is None:
+            raise HTTPException(404, "Organization not found")
+        ticket = PlatformSupportTicket(
+            organization_id=organization.id,
+            source=body.source,
+            subscription_id=body.subscription_id,
+            category=body.category,
+            priority=body.priority,
+            subject=body.subject,
+            description=body.description,
+            status="open",
+            context={**body.context, "events": [{"kind": "created", "actor_id": actor.user_id, "at": datetime.now(UTC).isoformat()}]},
+            created_by=actor.user_id,
+            updated_by=actor.user_id,
+        )
+        db.add(ticket)
+        await db.flush()
+        platform_audit(
+            db,
+            actor.user_id,
+            "support.ticket.create",
+            organization_id=organization.id,
+            reason=body.subject,
+            details={
+                "ticket_id": ticket.id,
+                "source": body.source,
+                "category": body.category,
+                "priority": body.priority,
+            },
+        )
+        enqueue_platform_notification(
+            db,
+            kind="support.ticket.created",
+            reference_id=ticket.id,
+            actor_id=actor.user_id,
+            payload={
+                "ticket_id": ticket.id,
+                "organization_id": organization.id,
+                "organization_name": organization.name,
+                "source": body.source,
+                "subject": ticket.subject,
+                "status": ticket.status,
+                "detail": f"{organization.name} · {ticket.subject}",
+                "cta_label": "Open Support",
+                "target_url": f"/admin/support/?tenant={organization.id}",
+            },
+        )
+        return _ticket_payload(ticket, {organization.id: organization}, {})
+
+
+@router.get("/platform/support/assignees")
+async def platform_support_assignees(
+    search: str = Query(default="", max_length=120),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("support.tenant_support_case.read")),
+):
+    """Return active platform users available to own Support tickets."""
+
+    async with control_session() as db:
+        query = select(PlatformUser).where(PlatformUser.active.is_(True)).order_by(PlatformUser.name, PlatformUser.email)
+        term = search.strip()
+        if term:
+            pattern = f"%{term}%"
+            query = query.where(or_(PlatformUser.name.ilike(pattern), PlatformUser.email.ilike(pattern)))
+        query = query.limit(25)
+        rows = (await db.scalars(query)).all()
+        platform_audit(db, actor.user_id, "support.assignees.read", details={"count": len(rows), "search": bool(term)})
+        return [{"id": row.id, "name": row.name, "email": row.email, "role": row.role} for row in rows]
+
+
+@router.get("/platform/support/activity")
+async def platform_support_activity(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    ticket_id: str | None = Query(default=None, max_length=36),
+    tenant_id: UUID | None = Query(default=None),
+    search: str = Query(default="", max_length=120),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("support.tenant_support_case.read")),
+):
+    """Return paginated Support lifecycle events without duplicating ticket ownership."""
+
+    async with control_session() as db:
+        organization = await db.get(Organization, str(tenant_id)) if tenant_id else None
+        if tenant_id and organization is None:
+            raise HTTPException(404, "Organization not found")
+        query = select(PlatformSupportTicket).order_by(PlatformSupportTicket.updated_at.desc(), PlatformSupportTicket.created_at.desc())
+        if ticket_id:
+            query = query.where(PlatformSupportTicket.id == ticket_id)
+        if organization:
+            query = query.where(PlatformSupportTicket.organization_id == organization.id)
+        rows = (await db.scalars(query)).all()
+        organization_ids = {ticket.organization_id for ticket in rows}
+        organizations = {
+            row.id: row
+            for row in (await db.scalars(select(Organization).where(Organization.id.in_(organization_ids)))).all()
+        } if organization_ids else {}
+        term = search.strip().lower()
+        items = []
+        for ticket in rows:
+            context = ticket.context or {}
+            for index, event in enumerate(context.get("events") or []):
+                haystack = " ".join(
+                    str(value or "")
+                    for value in (ticket.subject, ticket.organization_id, organizations.get(ticket.organization_id).name if ticket.organization_id in organizations else "", event.get("kind"), event.get("note"), event.get("actor_id"))
+                ).lower()
+                if term and term not in haystack:
+                    continue
+                items.append({
+                    "id": f"{ticket.id}:{index}",
+                    "ticket_id": ticket.id,
+                    "subject": ticket.subject,
+                    "organization_id": ticket.organization_id,
+                    "organization_name": organizations.get(ticket.organization_id).name if ticket.organization_id in organizations else "Unknown tenant",
+                    "kind": event.get("kind", "updated"),
+                    "actor_id": event.get("actor_id"),
+                    "at": event.get("at") or ticket.updated_at,
+                    "note": event.get("note"),
+                    "status": event.get("status"),
+                    "previous_status": event.get("previous_status"),
+                    "priority": event.get("priority"),
+                    "assignee_id": event.get("assignee_id"),
+                })
+        items.sort(key=lambda item: item.get("at") or "", reverse=True)
+        total = len(items)
+        start = (page - 1) * page_size
+        platform_audit(
+            db,
+            actor.user_id,
+            "support.activity.read",
+            organization_id=organization.id if organization else None,
+            details={"page": page, "page_size": page_size, "total": total, "ticket_id": ticket_id},
+        )
+        return {"page": page, "page_size": page_size, "total": total, "items": items[start:start + page_size]}
+
+
+@router.patch("/platform/support/tickets/{ticket_id}")
+async def update_platform_support_ticket(
+    ticket_id: str,
+    body: PlatformSupportTicketUpdate,
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("support.tenant_support_case.update")),
+):
+    """Apply an auditable Support lifecycle transition to the shared ticket record."""
+
+    async with control_session() as db:
+        ticket = await db.get(PlatformSupportTicket, ticket_id)
+        if ticket is None:
+            raise HTTPException(404, "Support ticket not found")
+        before = {
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "assignee_id": ticket.assignee_id,
+            "resolution_code": ticket.resolution_code,
+            "resolution_note": ticket.resolution_note,
+        }
+        action = body.action
+        next_status = body.status
+        assignee_id = ticket.assignee_id
+        if action == "assign":
+            assignee_id = actor.user_id
+        elif action == "unassign":
+            assignee_id = None
+        elif action == "reopen":
+            next_status = "open"
+        elif action == "resolve":
+            next_status = "resolved"
+        elif action == "close":
+            next_status = "closed"
+        if body.assignee_id is not None and action not in {"assign", "unassign"}:
+            assignee = await db.get(PlatformUser, str(body.assignee_id))
+            if assignee is None or not assignee.active:
+                raise HTTPException(422, "Assignee is not an active platform user")
+            assignee_id = assignee.id
+        if next_status is None and body.priority is None and body.assignee_id is None and body.resolution_code is None and body.resolution_note is None and body.note is None and action not in {"assign", "unassign"}:
+            raise HTTPException(422, "At least one ticket lifecycle update is required")
+        if next_status is not None and next_status not in SUPPORT_TICKET_TRANSITIONS.get(ticket.status, {ticket.status}):
+            raise HTTPException(409, f"Cannot move a {ticket.status} ticket to {next_status}")
+        if next_status in {"resolved", "closed"} and next_status != ticket.status and not (body.note or body.resolution_note or ticket.resolution_note):
+            raise HTTPException(422, "A resolution note is required before resolving or closing a ticket")
+        changed = False
+        if next_status is not None and next_status != ticket.status:
+            ticket.status = next_status
+            changed = True
+            if next_status == "resolved":
+                ticket.resolved_at = datetime.now(UTC)
+            elif next_status == "closed":
+                ticket.closed_at = datetime.now(UTC)
+            elif next_status == "open":
+                ticket.closed_at = None
+                ticket.resolved_at = None
+            _ticket_event(ticket, actor.user_id, "status_changed", previous_status=before["status"], status=next_status, note=body.note or "")
+        if body.priority is not None and body.priority != ticket.priority:
+            ticket.priority = body.priority
+            changed = True
+            _ticket_event(ticket, actor.user_id, "priority_changed", priority=body.priority)
+        if assignee_id != ticket.assignee_id:
+            ticket.assignee_id = assignee_id
+            changed = True
+            _ticket_event(ticket, actor.user_id, "assigned" if assignee_id else "unassigned", assignee_id=assignee_id)
+        if body.resolution_code is not None:
+            ticket.resolution_code = body.resolution_code
+            changed = True
+        if body.resolution_note is not None:
+            ticket.resolution_note = body.resolution_note
+            changed = True
+        if body.note and action not in {"resolve", "close"}:
+            changed = True
+            _ticket_event(ticket, actor.user_id, "note", note=body.note)
+        if not changed:
+            raise HTTPException(422, "The ticket already has the requested lifecycle state")
+        ticket.updated_by = actor.user_id
+        await db.flush()
+        organization = await db.get(Organization, ticket.organization_id)
+        after = {
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "assignee_id": ticket.assignee_id,
+            "resolution_code": ticket.resolution_code,
+            "resolution_note": ticket.resolution_note,
+        }
+        platform_audit(
+            db,
+            actor.user_id,
+            "support.ticket.update",
+            organization_id=ticket.organization_id,
+            reason=body.note or action or body.status or body.priority or "Support ticket updated",
+            details={"ticket_id": ticket.id, "before": before, "after": after},
+        )
+        event_kind = "support.ticket.status_changed" if before["status"] != ticket.status else "support.ticket.updated"
+        enqueue_platform_notification(
+            db,
+            kind=event_kind,
+            reference_id=f"{ticket.id}:{datetime.now(UTC).isoformat()}",
+            actor_id=actor.user_id,
+            payload={
+                "ticket_id": ticket.id,
+                "organization_id": ticket.organization_id,
+                "organization_name": organization.name if organization else "Unknown tenant",
+                "source": ticket.source,
+                "subject": ticket.subject,
+                "previous_status": before["status"],
+                "status": ticket.status,
+                "detail": f"{organization.name if organization else 'Unknown tenant'} · {ticket.subject}",
+                "cta_label": "Open Support",
+                "target_url": f"/admin/support/?tenant={ticket.organization_id}",
+            },
+        )
+        users = {}
+        if ticket.assignee_id:
+            assignee = await db.get(PlatformUser, ticket.assignee_id)
+            if assignee:
+                users[assignee.id] = assignee
+        return _ticket_payload(ticket, {organization.id: organization} if organization else {}, users)
+
+
+# Handle platform billing features for this module.
 @router.get("/platform/billing/features")
 async def platform_billing_features(
     include_inactive: bool = Query(default=False),
@@ -1409,6 +1838,7 @@ async def platform_billing_features(
         ]
 
 
+# Create or issue create platform feature while applying existing validation and authorization.
 @router.post("/platform/billing/features", status_code=201)
 async def create_platform_feature(
     body: PlatformFeatureInput,
@@ -1424,6 +1854,7 @@ async def create_platform_feature(
         return {"id": feature.id, **body.model_dump()}
 
 
+# Update update platform feature while preserving existing validation and audit behavior.
 @router.put("/platform/billing/features/{feature_id}")
 async def update_platform_feature(
     feature_id: str,
@@ -1454,6 +1885,7 @@ async def public_platform_plans():
         return [await platform_plan_payload_with_entitlements(db, plan) for plan in plans]
 
 
+# Handle platform billing plans for this module.
 @router.get("/platform/billing/plans")
 async def platform_billing_plans(
     include_inactive: bool = Query(default=False),
@@ -1468,6 +1900,7 @@ async def platform_billing_plans(
         return [await platform_plan_payload_with_entitlements(db, plan) for plan in plans]
 
 
+# Create or issue create platform plan while applying existing validation and authorization.
 @router.post("/platform/billing/plans", status_code=201)
 async def create_platform_plan(
     body: PlatformPlanInput,
@@ -1484,6 +1917,7 @@ async def create_platform_plan(
         return await platform_plan_payload_with_entitlements(db, plan)
 
 
+# Update update platform plan while preserving existing validation and audit behavior.
 @router.put("/platform/billing/plans/{plan_id}")
 async def update_platform_plan(
     plan_id: str,
@@ -1506,6 +1940,7 @@ async def update_platform_plan(
         return await platform_plan_payload_with_entitlements(db, plan)
 
 
+# Handle platform billing subscriptions for this module.
 @router.get("/platform/billing/subscriptions")
 async def platform_billing_subscriptions(
     search: str | None = Query(default=None, max_length=160),
@@ -1551,6 +1986,82 @@ async def platform_billing_subscriptions(
         return {"page": page, "page_size": page_size, "total": total, "items": jsonable_encoder(items)}
 
 
+@router.get("/platform/organizations/{identifier}/billing/ledger")
+async def platform_organization_billing_ledger(
+    identifier: str,
+    months: int = Query(default=12, ge=1, le=60),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.subscription_record.read")),
+):
+    """Return live tenant invoice totals for the Billing & plans detail chart."""
+    async with control_session() as db:
+        organization = await db.get(Organization, identifier)
+        if organization is None:
+            raise HTTPException(404, "Organization not found")
+        platform_audit(
+            db,
+            actor.user_id,
+            "billing.ledger.read",
+            organization_id=identifier,
+            details={"months": months},
+        )
+
+    now = datetime.now(UTC)
+    current_month = datetime(now.year, now.month, 1, tzinfo=UTC)
+    month_keys: list[tuple[int, int]] = []
+    for offset in range(months - 1, -1, -1):
+        month_index = current_month.month - 1 - offset
+        year = current_month.year + month_index // 12
+        month = month_index % 12 + 1
+        month_keys.append((year, month))
+    month_lookup = {key: index for index, key in enumerate(month_keys)}
+    month_totals = [0] * len(month_keys)
+    month_invoice_counts = [0] * len(month_keys)
+
+    async with organization_session(organization) as tenant_db:
+        invoices = (
+            await tenant_db.scalars(
+                select(Invoice)
+                .where(Invoice.created_at >= current_month)
+                .order_by(Invoice.created_at.desc())
+            )
+        ).all()
+
+    invoice_items = []
+    for invoice in invoices:
+        created_at = invoice.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        key = (created_at.year, created_at.month)
+        month_index = month_lookup.get(key)
+        if month_index is None:
+            continue
+        amount_cents = int(invoice.total_cents + invoice.adjustment_cents)
+        month_totals[month_index] += amount_cents
+        month_invoice_counts[month_index] += 1
+        invoice_items.append(
+            {
+                "id": invoice.id,
+                "created_at": created_at.isoformat(),
+                "amount_cents": amount_cents,
+                "paid_cents": int(invoice.paid_cents),
+                "status": invoice.status,
+            }
+        )
+
+    return {
+        "months": [
+            {
+                "month": f"{year:04d}-{month:02d}",
+                "amount_cents": month_totals[index],
+                "invoice_count": month_invoice_counts[index],
+            }
+            for index, (year, month) in enumerate(month_keys)
+        ],
+        "invoices": invoice_items,
+    }
+
+
+# Update set platform subscription while preserving existing validation and audit behavior.
 @router.put("/platform/organizations/{identifier}/subscription")
 async def set_platform_subscription(
     identifier: str,
@@ -1598,6 +2109,7 @@ async def set_platform_subscription(
         }
 
 
+# Handle platform financial operations for this module.
 @router.get("/platform/financial-operations/query")
 async def platform_financial_operations(
     search: str | None = Query(default=None, max_length=160),
@@ -1644,7 +2156,9 @@ async def platform_financial_operations(
                         )
                     )
                 ).one()
-                locations = await tenant_db.scalar(select(func.count()).select_from(Location)) or 0
+                locations = await tenant_db.scalar(
+                    select(func.count()).select_from(Location).where(Location.active.is_(True))
+                ) or 0
                 staff_seats = await tenant_db.scalar(
                     select(func.count()).select_from(StaffUser).where(StaffUser.active)
                 ) or 0
@@ -1676,6 +2190,7 @@ async def platform_financial_operations(
     return {"page": page, "page_size": page_size, "total": total, "items": items}
 
 
+# Retrieve get platform defaults for the current request or workflow.
 @router.get("/platform/settings/defaults")
 async def get_platform_defaults(actor: PlatformActor = Depends(platform_or_bootstrap)):
     async with control_session() as db:
@@ -1687,6 +2202,7 @@ async def get_platform_defaults(actor: PlatformActor = Depends(platform_or_boots
         }
 
 
+# Update set platform defaults while preserving existing validation and audit behavior.
 @router.put("/platform/settings/defaults")
 async def set_platform_defaults(
     body: PlatformDefaultsInput,
@@ -1701,6 +2217,7 @@ async def set_platform_defaults(
         return body.model_dump()
 
 
+# Handle platform communication templates for this module.
 @router.get("/platform/communication-templates")
 async def platform_communication_templates(
     actor: PlatformActor = Depends(platform_or_bootstrap),
@@ -1711,6 +2228,7 @@ async def platform_communication_templates(
         return row.communication_templates
 
 
+# Update set platform communication template while preserving existing validation and audit behavior.
 @router.put("/platform/communication-templates/{key}")
 async def set_platform_communication_template(
     key: str,
@@ -1727,6 +2245,7 @@ async def set_platform_communication_template(
         return row.communication_templates[key]
 
 
+# Handle platform access query for this module.
 @router.get("/platform/access/query")
 async def platform_access_query(
     search: str | None = Query(default=None, max_length=160),
@@ -1810,6 +2329,7 @@ async def platform_access_query(
         return {"page": page, "page_size": page_size, "total": total, "items": items[start:start + page_size]}
 
 
+# Handle platform notifications for this module.
 @router.get("/platform/notifications")
 async def platform_notifications(
     page: int = Query(default=1, ge=1),
@@ -1837,7 +2357,7 @@ async def platform_notifications(
             severity = "danger" if status in {"failed", "retry"} else "warning" if status == "pending" else "info"
             kind = row.kind.replace(".", " ").replace("_", " ").strip().capitalize()
             payload = row.payload if isinstance(row.payload, dict) else {}
-            detail = payload.get("subject") or payload.get("title") or (
+            detail = payload.get("detail") or payload.get("subject") or payload.get("title") or (
                 "Delivery failed and needs attention" if status in {"failed", "retry"}
                 else "Delivery is queued" if status == "pending" else "Delivery completed"
             )
@@ -1861,6 +2381,7 @@ async def platform_notifications(
                 "created_at": row.created_at,
                 "unread": status in {"pending", "retry", "failed"},
                 "cta_label": str(cta_label),
+                "target_url": payload.get("target_url"),
             })
         platform_audit(db, actor.user_id, "platform-notifications.read")
         return {
@@ -1873,6 +2394,7 @@ async def platform_notifications(
         }
 
 
+# Create or issue create platform invite while applying existing validation and authorization.
 @router.post("/platform/invites", status_code=201)
 async def create_platform_invite(
     body: PlatformInviteInput,
@@ -1937,6 +2459,7 @@ async def create_platform_invite(
         }
 
 
+# Handle resend platform invite for this module.
 @router.post("/platform/invites/{identifier}/resend", status_code=201)
 async def resend_platform_invite(
     identifier: str,
@@ -1983,6 +2506,7 @@ async def resend_platform_invite(
         }
 
 
+# Apply the revoke platform invite lifecycle transition and its existing safeguards.
 @router.post("/platform/invites/{identifier}/revoke")
 async def revoke_platform_invite(
     identifier: str,
@@ -1998,6 +2522,7 @@ async def revoke_platform_invite(
         return {"revoked": True}
 
 
+# Update set platform user status while preserving existing validation and audit behavior.
 @router.put("/platform/users/{identifier}/status")
 async def set_platform_user_status(
     identifier: str,
@@ -2015,6 +2540,7 @@ async def set_platform_user_status(
         return {"id": user.id, "active": user.active}
 
 
+# Handle initiate platform password reset for this module.
 @router.post("/platform/users/{identifier}/password-reset", status_code=201)
 async def initiate_platform_password_reset(
     identifier: str,
@@ -2080,6 +2606,7 @@ async def initiate_platform_password_reset(
         }
 
 
+# Handle platform adapter defaults for this module.
 @router.get("/platform/adapter-defaults")
 async def platform_adapter_defaults(actor: PlatformActor = Depends(permit_platform_or_bootstrap("integrations.platform_adapter_default.read"))):
     async with control_session() as db:
@@ -2094,6 +2621,7 @@ async def platform_adapter_defaults(actor: PlatformActor = Depends(permit_platfo
         return [serialize(row) for row in rows]
 
 
+# Update set platform adapter default while preserving existing validation and audit behavior.
 @router.put("/platform/adapter-defaults")
 async def set_platform_adapter_default(
     body: AdapterDefaultInput,
@@ -2172,6 +2700,7 @@ async def set_platform_adapter_default(
         return serialize(row)
 
 
+# Handle platform integration requests for this module.
 @router.get("/platform/integration-requests")
 async def platform_integration_requests(
     status: str | None = Query(default=None, pattern="^(pending|approved|rejected)$"),
@@ -2188,6 +2717,7 @@ async def platform_integration_requests(
         return [serialize(row) for row in rows]
 
 
+# Handle decide integration request for this module.
 @router.put("/platform/integration-requests/{identifier}")
 async def decide_integration_request(
     identifier: str,
@@ -2315,6 +2845,7 @@ async def decide_integration_request(
         return serialize(request)
 
 
+# Update configure routing while preserving existing validation and audit behavior.
 @router.put("/platform/organizations/{identifier}/routing")
 async def configure_routing(
     identifier: str,
@@ -2347,6 +2878,7 @@ async def configure_routing(
         return body.model_dump()
 
 
+# Handle extraction check for this module.
 @router.get("/platform/organizations/{identifier}/extraction-preflight")
 async def extraction_check(
     identifier: str,
@@ -2368,6 +2900,7 @@ async def extraction_check(
         raise HTTPException(422, str(error)) from None
 
 
+# Handle database cutover for this module.
 @router.put("/platform/organizations/{identifier}/database-alias")
 async def database_cutover(
     identifier: str,
@@ -2392,6 +2925,7 @@ async def database_cutover(
     return {"organization_id": identifier, "database_alias": body.target_alias}
 
 
+# Handle recover administrator for this module.
 @router.post("/platform/organizations/{identifier}/recovery")
 async def recover_administrator(
     identifier: str,
@@ -2515,6 +3049,7 @@ async def recover_administrator(
     return {"status": "completed", "action": body.action}
 
 
+# Handle accept invite for this module.
 @router.post("/auth/invites/accept")
 async def accept_invite(body: AcceptInvite):
     if not await throttle("invite:" + digest(body.token)):
@@ -2581,6 +3116,7 @@ async def accept_invite(body: AcceptInvite):
     return {"status": "created", "mfa_enrollment_required": True}
 
 
+# Handle staff invite for this module.
 @router.post("/organization/invites", status_code=201)
 async def staff_invite(body: InviteInput, db=Depends(db_session), actor=Depends(permit("settings"))):
     assignments = assignment_inputs(body)
@@ -2592,6 +3128,7 @@ async def staff_invite(body: InviteInput, db=Depends(db_session), actor=Depends(
     return await invite(db, body, actor.user_id, actor.organization.name, tenant_slug=actor.organization.slug)
 
 
+# Handle organization access for this module.
 @router.get("/organization/access")
 async def organization_access(db=Depends(db_session), actor=Depends(permit("settings"))):
     now = int(time.time())
@@ -2669,6 +3206,7 @@ async def organization_access(db=Depends(db_session), actor=Depends(permit("sett
     return {"staff": staff_items, "invitations": invitation_items}
 
 
+# Handle organization access roles for this module.
 @router.get("/organization/access/roles")
 async def organization_access_roles(db=Depends(db_session), actor=Depends(permit("settings"))):
     rows = (
@@ -2697,6 +3235,7 @@ async def organization_access_roles(db=Depends(db_session), actor=Depends(permit
     return result
 
 
+# Handle organization access query for this module.
 @router.get("/organization/access/query")
 async def organization_access_query(
     kind: str = Query(pattern="^(staff|invitation)$"),
@@ -2879,6 +3418,7 @@ async def organization_access_query(
     return {"page": page, "page_size": page_size, "total": total, "items": items}
 
 
+# Handle resend invitation for this module.
 @router.post("/organization/invites/{identifier}/resend")
 async def resend_invitation(
     identifier: str,
@@ -2962,6 +3502,7 @@ async def resend_invitation(
     return {"invite_id": replacement.id, "token": raw, "invitation_link": staff_invitation_url(raw, actor.organization.slug), "expires_in": 86400}
 
 
+# Apply the revoke invitation lifecycle transition and its existing safeguards.
 @router.post("/organization/invites/{identifier}/revoke")
 async def revoke_invitation(
     identifier: str,
@@ -2982,14 +3523,17 @@ async def revoke_invitation(
     return {"status": "revoked"}
 
 
+# Defines the staff password reset model, contract, or value object.
 class StaffPasswordReset(BaseModel):
     reason: str = Field(min_length=10, max_length=1000)
 
 
+# Defines the staff suspension model, contract, or value object.
 class StaffSuspension(BaseModel):
     hours: int = Field(ge=1, le=8760)
 
 
+# Internal helper for change staff lifecycle.
 async def _change_staff_lifecycle(identifier: str, db, actor, *, active: bool | None = None, suspended_until=None, archived: bool | None = None):
     user = await required(db, StaffUser, identifier, lock=True)
     if user.id == actor.user_id and (active is False or archived is True or suspended_until is not None):
@@ -3015,6 +3559,7 @@ async def _change_staff_lifecycle(identifier: str, db, actor, *, active: bool | 
     return {"id": user.id, "active": user.active, "suspended_until": user.suspended_until, "archived_at": user.archived_at}
 
 
+# Handle reset staff password for this module.
 @router.post("/organization/staff/{identifier}/password-reset", status_code=202)
 async def reset_staff_password(
     identifier: str,
@@ -3044,26 +3589,31 @@ async def reset_staff_password(
     return {"status": "queued"}
 
 
+# Handle suspend staff for this module.
 @router.post("/organization/staff/{identifier}/suspend")
 async def suspend_staff(identifier: str, body: StaffSuspension, db=Depends(db_session), actor=Depends(permit("settings"))):
     return await _change_staff_lifecycle(identifier, db, actor, active=True, suspended_until=datetime.now(UTC) + timedelta(hours=body.hours))
 
 
+# Apply the disable staff lifecycle transition and its existing safeguards.
 @router.post("/organization/staff/{identifier}/disable")
 async def disable_staff(identifier: str, db=Depends(db_session), actor=Depends(permit("settings"))):
     return await _change_staff_lifecycle(identifier, db, actor, active=False)
 
 
+# Apply the archive staff lifecycle transition and its existing safeguards.
 @router.post("/organization/staff/{identifier}/archive")
 async def archive_staff(identifier: str, db=Depends(db_session), actor=Depends(permit("settings"))):
     return await _change_staff_lifecycle(identifier, db, actor, archived=True)
 
 
+# Handle restore staff for this module.
 @router.post("/organization/staff/{identifier}/restore")
 async def restore_staff(identifier: str, db=Depends(db_session), actor=Depends(permit("settings"))):
     return await _change_staff_lifecycle(identifier, db, actor, archived=False)
 
 
+# Retrieve get settings for the current request or workflow.
 @router.get("/organization/settings")
 async def get_settings(db=Depends(db_session), actor=Depends(permit("settings"))):
     row = await tenant_settings(db)
@@ -3094,6 +3644,7 @@ async def get_settings(db=Depends(db_session), actor=Depends(permit("settings"))
     }
 
 
+# Retrieve get provider options for the current request or workflow.
 @router.get("/organization/provider-options")
 async def get_provider_options(actor=Depends(permit("settings"))):
     return {
@@ -3103,6 +3654,7 @@ async def get_provider_options(actor=Depends(permit("settings"))):
     }
 
 
+# Handle organization integration requests for this module.
 @router.get("/organization/integration-requests")
 async def organization_integration_requests(actor=Depends(permit("settings"))):
     async with control_session() as db:
@@ -3117,6 +3669,7 @@ async def organization_integration_requests(actor=Depends(permit("settings"))):
         return [serialize(row) for row in rows]
 
 
+# Create or issue request integration customization while applying existing validation and authorization.
 @router.post("/organization/integration-requests", status_code=201)
 async def request_integration_customization(
     body: AdapterRequestInput,
@@ -3156,6 +3709,7 @@ async def request_integration_customization(
     return result
 
 
+# Update set settings while preserving existing validation and audit behavior.
 @router.put("/organization/settings")
 async def set_settings(body: OrgSettings, db=Depends(db_session), actor=Depends(permit("settings"))):
     if body.booking_widget and body.booking_widget.default_location_id:
@@ -3181,6 +3735,7 @@ async def set_settings(body: OrgSettings, db=Depends(db_session), actor=Depends(
     return body.model_dump()
 
 
+# Handle communication templates for this module.
 @router.get("/organization/communication-templates")
 async def communication_templates(
     db=Depends(db_session), actor=Depends(permit("settings"))
@@ -3188,6 +3743,7 @@ async def communication_templates(
     return (await tenant_settings(db)).communication_templates
 
 
+# Update update communication template while preserving existing validation and audit behavior.
 @router.put("/organization/communication-templates/{key}")
 async def update_communication_template(
     key: str,
@@ -3207,6 +3763,7 @@ async def update_communication_template(
     return runtime.communication_templates[key]
 
 
+# Handle test communication template for this module.
 @router.post("/organization/communication-templates/{key}/test", status_code=202)
 async def test_communication_template(
     key: str,
@@ -3259,6 +3816,7 @@ async def test_communication_template(
     return {"status": "queued"}
 
 
+# Handle staff for this module.
 @router.get("/organization/staff")
 async def staff(db=Depends(db_session), actor=Depends(permit("settings"))):
     users = (await db.scalars(select(StaffUser))).all()
@@ -3279,6 +3837,7 @@ async def staff(db=Depends(db_session), actor=Depends(permit("settings"))):
     ]
 
 
+# Defines the staff access model, contract, or value object.
 class StaffAccess(BaseModel):
     role: str | None = None
     active: bool
@@ -3287,6 +3846,7 @@ class StaffAccess(BaseModel):
     assignments: list[AccessAssignmentInput] = Field(default_factory=list)
 
 
+# Handle staff access for this module.
 @router.put("/organization/staff/{identifier}")
 async def staff_access(
     identifier: str, body: StaffAccess, db=Depends(db_session), actor=Depends(permit("settings"))
