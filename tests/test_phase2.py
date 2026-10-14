@@ -278,5 +278,5 @@ async def test_documents_cms_public_booking_and_provider_seam(client, tenants):
 async def test_phase2_migration_is_current(tenants):
     for tenant in tenants:
         async with tenant_session(tenant["org"].schema_name) as db:
-            assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "0019"
+            assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "0037_location_lifecycle"
             assert await db.scalar(text("SELECT to_regclass('patient_sessions')")) == "patient_sessions"

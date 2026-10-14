@@ -13,7 +13,6 @@ from alembic import context, op
 from app.rbac.default_roles import _validate_default_permissions, default_role_definitions
 from app.rbac.registry import load_approved_registry
 
-
 revision = "0034_default_role_permissions"
 down_revision = "0033_plan_feature_catalogue"
 branch_labels = None
@@ -44,6 +43,7 @@ def upgrade():
     definitions = {item["name"]: item for item in default_role_definitions()}
     _validate_default_permissions(registry, definitions)
     connection = op.get_bind()
+    grant_rows = []
     for name, definition in definitions.items():
         role_id = connection.execute(
             sa.text(
@@ -68,27 +68,35 @@ def upgrade():
             scope = _scope(definition, permission)
             if scope is None:
                 continue
-            connection.execute(
-                sa.text(
-                    f"""
-                    INSERT INTO "{schema}".tenant_role_grants
-                        (id, role_id, permission_key, effect, scope,
-                         conditions, created_at, updated_at, created_by, updated_by)
-                    VALUES
-                        (:id, :role_id, :permission_key, 'allow', :scope,
-                         '{{}}'::json, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-                         'default-role-permissions-migration',
-                         'default-role-permissions-migration')
-                    ON CONFLICT (role_id, permission_key) DO NOTHING
-                    """
-                ),
+            grant_rows.append(
                 {
                     "id": str(uuid4()),
                     "role_id": role_id,
                     "permission_key": permission.key,
                     "scope": scope,
-                },
+                }
             )
+
+    # Submit the complete backfill as one executemany operation.  The previous
+    # per-grant round trip made remote Supabase upgrades appear to hang while
+    # preserving the same idempotent unique-key behavior.
+    if grant_rows:
+        connection.execute(
+            sa.text(
+                f"""
+                INSERT INTO "{schema}".tenant_role_grants
+                    (id, role_id, permission_key, effect, scope,
+                     conditions, created_at, updated_at, created_by, updated_by)
+                VALUES
+                    (:id, :role_id, :permission_key, 'allow', :scope,
+                     '{{}}'::json, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                     'default-role-permissions-migration',
+                     'default-role-permissions-migration')
+                ON CONFLICT (role_id, permission_key) DO NOTHING
+                """
+            ),
+            grant_rows,
+        )
 
 
 # Run the downgrade entry point for this module.

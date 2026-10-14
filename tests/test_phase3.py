@@ -269,6 +269,6 @@ async def test_phase3_care_surgery_reporting_and_operations(client, tenants):
 async def test_phase3_migration_is_current(tenants):
     for tenant in tenants:
         async with tenant_session(tenant["org"].schema_name) as db:
-            assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "0019"
+            assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "0037_location_lifecycle"
             assert await db.scalar(text("SELECT to_regclass('prescriptions')")) == "prescriptions"
             assert await db.scalar(text("SELECT to_regclass('day_surgery_admissions')")) == "day_surgery_admissions"

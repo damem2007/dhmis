@@ -105,6 +105,9 @@ async def enqueue_platform_email(
         created_by=actor_id,
         updated_by=actor_id,
     )
+    # Keep accepted deliveries in the control-plane outbox so callers can
+    # query the returned delivery id and the notification worker can audit it.
+    db.add(row)
     adapters = await platform_adapter_names(db)
     if "email_provider" not in adapters and settings().environment in {"development", "sandbox", "test"}:
         adapters["email_provider"] = "sandbox"

@@ -278,7 +278,7 @@ async def test_migrations_can_be_reapplied(tenants):
     t = tenants[0]
     await migrate_schema(t["org"].schema_name)
     async with tenant_session(t["org"].schema_name) as db:
-        assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "0019"
+        assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "0037_location_lifecycle"
         assert await db.get(Patient, t["patient"].id)
 
 
