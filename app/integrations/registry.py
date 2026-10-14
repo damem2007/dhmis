@@ -8,8 +8,8 @@ from importlib.metadata import entry_points
 
 from app.core.config import settings
 from app.integrations.contracts import (
-    ClaimsNetwork,
     AccountingExporter,
+    ClaimsNetwork,
     GeocodingProvider,
     IntegrationFailure,
     MapProvider,
@@ -17,7 +17,7 @@ from app.integrations.contracts import (
     PaymentGateway,
     SignatureProvider,
 )
-from app.integrations.geocoding_providers import (
+from app.integrations.geocoding import (
     NominatimGeocodingProvider,
     OverpassAddressProvider,
     PhotonGeocodingProvider,
