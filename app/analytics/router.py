@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from app.analytics.catalogue import public_catalogue
 from app.analytics.models import AnalyticsActionItem
 from app.analytics.scope import resolve_scope
-from app.analytics.service import (
+from app.analytics.services import (
     ROLE_METRICS,
     calculate_metrics,
     organization_breakdown,
