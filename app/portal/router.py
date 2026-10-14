@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from app.billing.models import Invoice, LedgerEntry, PaymentPlan, Service
 from app.billing.service import create_payment_plan, payment
-from app.cms.service import default_content, published_revision
+from app.cms.services import default_content, published_revision
 from app.consents.models import Consent
 from app.core.audit import audit
 from app.core.repository import add, required, serialize

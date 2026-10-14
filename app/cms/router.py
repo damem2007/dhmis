@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from app.billing.models import Service
 from app.cms.models import CmsMediaAsset, CmsRevision
 from app.cms.schemas import CmsContentInput, DraftInput, MediaUploadInput, PublishInput
-from app.cms.service import (
+from app.cms.services import (
     activate_publication,
     assert_current,
     default_content,
