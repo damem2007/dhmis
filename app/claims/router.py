@@ -8,6 +8,7 @@ from app.billing.models import Invoice
 from app.claims.models import Claim, InsurancePlan
 from app.claims.service import adjudicate_claim, reconcile_claim
 from app.core.audit import audit
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, page_count
 from app.core.repository import add, required, serialize
 from app.identity.service import db_session, permit
 from app.integrations.contracts import ClaimRequest, EligibilityRequest
@@ -47,7 +48,7 @@ async def claims(db=Depends(db_session), actor=Depends(permit("claims"))):
 @router.get("/query")
 async def claims_query(
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     status: str = Query(default="", max_length=30),
     network: str = Query(default="", max_length=80),
     location_id: str = Query(default="", max_length=36),
@@ -101,6 +102,7 @@ async def claims_query(
         "page": page,
         "page_size": page_size,
         "total": total,
+        "pages": page_count(total, page_size),
         "items": [serialize(row) for row in rows],
     }
 

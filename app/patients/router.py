@@ -1,14 +1,19 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 
 from app.core.audit import audit
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, page_count
 from app.core.repository import add, required, serialize
 from app.identity.service import db_session, permit
+from app.organizations.models import Location
+from app.patient_identity.invitations import issue_patient_invite
+from app.patients.models import GuardianLink, Patient
+from app.patients.schemas import PatientCreate
 from app.rbac.dependencies import permit_tenant
 from app.rbac.models import TenantApprovalPolicy, TenantChangeDecision, TenantChangeRequest
 from app.rbac.runtime import decide_tenant, tenant_policy_context
@@ -18,10 +23,6 @@ from app.rbac.workflow import (
     create_runtime_action_request,
     request_payload,
 )
-from app.organizations.models import Location
-from app.patient_identity.invitations import issue_patient_invite
-from app.patients.models import GuardianLink, Patient
-from app.patients.schemas import PatientCreate
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
 
@@ -29,24 +30,88 @@ router = APIRouter(prefix="/patients", tags=["Patients"])
 # Handle patients for this module.
 @router.get("")
 async def patients(
-    q: str = Query("", max_length=80), db=Depends(db_session), actor=Depends(permit("patients"))
+    q: str = Query("", max_length=80),
+    page: int | None = Query(None, ge=1),
+    page_size: int | None = Query(None, ge=1, le=MAX_PAGE_SIZE),
+    location_id: str = Query("", max_length=36),
+    status: str = Query("active", pattern="^(active|archived|all)$"),
+    age_from: int | None = Query(None, ge=0, le=120),
+    age_to: int | None = Query(None, ge=0, le=120),
+    db=Depends(db_session),
+    actor=Depends(permit("patients")),
 ):
-    query = select(Patient).where(Patient.archived_at.is_(None)).order_by(
-        Patient.last_name, Patient.first_name
-    ).limit(200)
+    conditions = []
+    if status == "active":
+        conditions.append(Patient.archived_at.is_(None))
+    elif status == "archived":
+        conditions.append(Patient.archived_at.is_not(None))
     if q:
-        query = query.where(or_(Patient.first_name.ilike(f"%{q}%"), Patient.last_name.ilike(f"%{q}%")))
-    rows = (await db.scalars(query)).all()
-    audit(db, actor.user_id, "read", "patients", count=len(rows))
-    return [serialize(row) for row in rows]
+        needle = f"%{q}%"
+        conditions.append(
+            or_(
+                Patient.first_name.ilike(needle),
+                Patient.last_name.ilike(needle),
+                Patient.email.ilike(needle),
+                Patient.phone.ilike(needle),
+            )
+        )
+    if location_id:
+        conditions.append(Patient.location_id == location_id)
+    if age_from is not None and age_to is not None and age_from > age_to:
+        raise HTTPException(422, "Age from must be less than or equal to age to")
+    today = date.today()
+    if age_from is not None:
+        conditions.append(Patient.birth_date <= today.replace(year=today.year - age_from))
+    if age_to is not None:
+        youngest_birth_date = today.replace(year=today.year - (age_to + 1)) + timedelta(days=1)
+        conditions.append(Patient.birth_date >= youngest_birth_date)
+    base_query = select(Patient).where(*conditions).order_by(
+        Patient.last_name, Patient.first_name, Patient.id
+    )
+    # Existing callers that do not request pagination continue to receive the
+    # original list response, capped at 200 rows. New list views request both
+    # parameters and receive an API-driven page with an authoritative total.
+    if page is None and page_size is None:
+        # Legacy array callers remain bounded for compatibility; paginated callers use
+        # the API contract below and can request any supported page size.
+        rows = (await db.scalars(base_query.limit(MAX_PAGE_SIZE))).all()
+        audit(db, actor.user_id, "read", "patients", count=len(rows))
+        return [serialize(row) for row in rows]
+
+    current_page = page or 1
+    current_page_size = page_size or DEFAULT_PAGE_SIZE
+    total = await db.scalar(select(func.count()).select_from(Patient).where(*conditions))
+    rows = (
+        await db.scalars(
+            base_query.offset((current_page - 1) * current_page_size).limit(current_page_size)
+        )
+    ).all()
+    total_pages = page_count(total or 0, current_page_size)
+    audit(
+        db,
+        actor.user_id,
+        "read",
+        "patients",
+        count=len(rows),
+        total=total or 0,
+        page=current_page,
+        page_size=current_page_size,
+    )
+    return {
+        "items": [serialize(row) for row in rows],
+        "total": total or 0,
+        "page": current_page,
+        "page_size": current_page_size,
+        "pages": total_pages,
+    }
 
 
 # Handle create for this module.
 @router.post("", status_code=201)
 async def create(body: PatientCreate, db=Depends(db_session), actor=Depends(permit("patients"))):
     await required(db, Location, body.location_id)
-    row = await add(db, Patient, body.model_dump(), actor.user_id)
-    invitation = await issue_patient_invite(db, row, body.email, actor) if body.email else None
+    row = await add(db, Patient, body.model_dump(exclude={"send_portal_invitation"}), actor.user_id)
+    invitation = await issue_patient_invite(db, row, body.email, actor) if body.email and body.send_portal_invitation else None
     audit(db, actor.user_id, "create", "patients", row.id)
     result = serialize(row)
     if invitation:
@@ -64,7 +129,7 @@ async def update(
     if row.archived_at is not None:
         raise HTTPException(409, "Archived patient profiles are read-only")
     await required(db, Location, body.location_id)
-    for key, value in body.model_dump().items():
+    for key, value in body.model_dump(exclude={"send_portal_invitation"}).items():
         setattr(row, key, value)
     row.updated_by = actor.user_id
     audit(db, actor.user_id, "update", "patients", row.id)
@@ -219,3 +284,13 @@ async def family(identifier: str, db=Depends(db_session), actor=Depends(permit("
     ).all()
     audit(db, actor.user_id, "read-family", "patients", identifier)
     return [serialize(x) for x in rows]
+
+
+# Handle patient detail reads without requiring the list endpoint to preload records.
+@router.get("/{identifier}")
+async def detail(identifier: str, db=Depends(db_session), actor=Depends(permit("patients"))):
+    """Return one patient record for the record view."""
+
+    row = await required(db, Patient, identifier)
+    audit(db, actor.user_id, "read-detail", "patients", identifier)
+    return serialize(row)

@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
 from app.core.audit import AuditEvent, audit
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.core.repository import serialize
 from app.identity.models import StaffUser
 from app.identity.service import current_actor, db_session, permit, role_names_with_module
@@ -109,7 +110,7 @@ async def query_events(
     location_id: str | None = Query(default=None),
     outcome: str | None = Query(default=None, pattern="^(success|denied)$"),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     db=Depends(db_session),
     actor=Depends(permit("settings")),
 ):

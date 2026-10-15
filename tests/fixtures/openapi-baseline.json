@@ -690,6 +690,11 @@
             "title": "Introduction",
             "type": "string"
           },
+          "location_rotation_enabled": {
+            "default": false,
+            "title": "Location Rotation Enabled",
+            "type": "boolean"
+          },
           "locations": {
             "items": {
               "$ref": "#/components/schemas/LocationContentInput"
@@ -1658,6 +1663,12 @@
             "title": "Osm Place Id",
             "type": "string"
           },
+          "phone": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Phone",
+            "type": "string"
+          },
           "policy": {
             "additionalProperties": {
               "type": "integer"
@@ -1988,6 +1999,12 @@
             "default": "",
             "maxLength": 120,
             "title": "Location Osm Place Id",
+            "type": "string"
+          },
+          "location_phone": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Location Phone",
             "type": "string"
           },
           "location_timezone": {
@@ -2607,6 +2624,12 @@
             "default": "",
             "maxLength": 120,
             "title": "Osm Place Id",
+            "type": "string"
+          },
+          "phone": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Phone",
             "type": "string"
           },
           "timezone": {

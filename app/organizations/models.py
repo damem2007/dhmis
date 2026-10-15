@@ -155,6 +155,7 @@ class Location(Record, Base):
     __table_args__ = {"schema": "tenant"}
     name: Mapped[str] = mapped_column(String(160))
     address: Mapped[str] = mapped_column(String(500), default="")
+    phone: Mapped[str] = mapped_column(String(40), default="")
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     osm_place_id: Mapped[str] = mapped_column(String(120), default="")

@@ -18,6 +18,7 @@ from app.analytics.services import (
     worklist,
 )
 from app.core.audit import audit
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.core.repository import required, serialize
 from app.identity.service import db_session, permit
 
@@ -117,7 +118,7 @@ async def role_dashboard(
 async def actions(
     status: str | None = Query(default=None, pattern="^(open|in_progress|resolved|dismissed|not_applicable)$"),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     location_id: str | None = Query(default=None),
     provider_id: str | None = Query(default=None),
     db=Depends(db_session),
@@ -203,7 +204,7 @@ async def metric_worklist(
     location_id: str | None = Query(default=None),
     provider_id: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     search: str = Query(default="", max_length=120),
     db=Depends(db_session),
     actor=Depends(permit("analytics")),

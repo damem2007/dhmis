@@ -1,4 +1,6 @@
+import calendar
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Literal
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -14,10 +16,26 @@ from app.organizations.jurisdiction import jurisdiction
 from app.patients.models import Patient
 
 
+# Add calendar months while clamping dates such as January 31 to the last day of the target month.
+def _add_months(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
 # Create or issue create payment plan while applying existing validation and authorization.
 async def create_payment_plan(
-    db, actor, invoice_id: str, installments: int, first_due: date
+    db,
+    actor,
+    invoice_id: str,
+    installments: int,
+    first_due: date,
+    frequency: Literal["monthly", "biweekly"] = "monthly",
 ):
+    if frequency not in {"monthly", "biweekly"}:
+        raise HTTPException(422, "Frequency must be monthly or biweekly")
     invoice = await required(db, Invoice, invoice_id, lock=True)
     existing = await db.scalar(select(PaymentPlan).where(PaymentPlan.invoice_id == invoice_id))
     if existing:
@@ -28,8 +46,13 @@ async def create_payment_plan(
     base, remainder = divmod(balance, installments)
     schedule = [
         {
-            "due": (first_due + timedelta(days=30 * index)).isoformat(),
+            "due": (
+                _add_months(first_due, index)
+                if frequency == "monthly"
+                else first_due + timedelta(days=14 * index)
+            ).isoformat(),
             "amount_cents": base + (1 if index < remainder else 0),
+            "frequency": frequency,
         }
         for index in range(installments)
     ]

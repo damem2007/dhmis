@@ -146,7 +146,7 @@ async def storefront_data(
                 "id": row.id,
                 "name": content_locations.get(row.id, {}).get("name") or row.name,
                 "address": content_locations.get(row.id, {}).get("address") or row.address,
-                "phone": content_locations.get(row.id, {}).get("phone", ""),
+                "phone": content_locations.get(row.id, {}).get("phone") or row.phone,
                 "email": content_locations.get(row.id, {}).get("email", ""),
                 "timezone": content_locations.get(row.id, {}).get("timezone") or row.timezone,
                 "hours": content_locations.get(row.id, {}).get("hours", {}),

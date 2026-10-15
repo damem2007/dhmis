@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from app.core.audit import audit
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.core.repository import add, required, serialize
 from app.identity.security import vault
 from app.identity.service import db_session, permit
@@ -46,7 +47,7 @@ async def message_patients(db=Depends(db_session), actor=Depends(permit("messagi
 @router.get("/page")
 async def thread_page(
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=5, ge=1, le=200),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     status: str = Query(default="", max_length=30),
     patient_id: str = Query(default="", max_length=36),
     search: str = Query(default="", max_length=80),

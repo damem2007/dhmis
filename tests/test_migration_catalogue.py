@@ -36,7 +36,7 @@ def _metadata(path: Path) -> tuple[str, str | None]:
 def test_migration_catalogue_is_a_single_complete_chain():
     files = sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9][0-9]_*.py"))
 
-    assert len(files) == 37
+    assert len(files) == 38
     revisions = [_metadata(path) for path in files]
     assert revisions[0] == ("0001", None)
     for previous, current in zip(revisions, revisions[1:]):

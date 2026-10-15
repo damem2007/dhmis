@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from app.core.audit import audit
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, page_count
 from app.core.repository import add, required
 from app.identity.security import digest
 from app.identity.service import db_session, permit
@@ -44,11 +45,11 @@ async def patient_invites(
     search: str | None = None,
     status: str | None = None,
     page: int = 1,
-    page_size: int = 25,
+    page_size: int = DEFAULT_PAGE_SIZE,
     db=Depends(db_session),
     actor=Depends(permit("patients")),
 ):
-    if page < 1 or page_size < 10 or page_size > 100:
+    if page < 1 or page_size < 1 or page_size > MAX_PAGE_SIZE:
         raise HTTPException(422, "Invalid invitation pagination")
     now = int(time.time())
     query = select(PatientInvite, Patient).join(Patient, Patient.id == PatientInvite.patient_id)
@@ -82,6 +83,7 @@ async def patient_invites(
         "page": page,
         "page_size": page_size,
         "total": total,
+        "pages": page_count(total, page_size),
         "items": [
             {
                 "id": invitation.id,

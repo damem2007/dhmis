@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -250,13 +251,21 @@ async def refund(
 class PlanInput(BaseModel):
     installments: int = Field(ge=2, le=24)
     first_due: date
+    frequency: Literal["monthly", "biweekly"] = "monthly"
 
 
 # Handle plan for this module.
 @router.post("/invoices/{identifier}/payment-plan", status_code=201)
 async def plan(identifier: str, body: PlanInput, db=Depends(db_session), actor=Depends(permit("billing"))):
     return serialize(
-        await create_payment_plan(db, actor, identifier, body.installments, body.first_due)
+        await create_payment_plan(
+            db,
+            actor,
+            identifier,
+            body.installments,
+            body.first_due,
+            body.frequency,
+        )
     )
 
 

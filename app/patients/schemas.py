@@ -10,6 +10,7 @@ class PatientCreate(BaseModel):
     birth_date: date
     email: str = Field(default="", max_length=254)
     phone: str = Field(default="", max_length=40)
+    send_portal_invitation: bool = True
     allergies: list[str] = Field(default_factory=list, max_length=50)
     location_id: str
 

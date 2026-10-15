@@ -89,6 +89,8 @@ class CmsContentInput(BaseModel):
     services: list[ServiceInput] = Field(default_factory=list, max_length=200)
     dentists: list[DentistInput] = Field(default_factory=list, max_length=200)
     locations: list[LocationContentInput] = Field(default_factory=list, max_length=100)
+    # Keep the first location static unless the site editor explicitly enables rotation.
+    location_rotation_enabled: bool = False
     media: list[MediaInput] = Field(default_factory=list, max_length=500)
     testimonials_enabled: bool = False
     regulator_declaration: bool = False

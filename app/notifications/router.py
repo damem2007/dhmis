@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 
 from app.core.audit import audit
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.core.repository import required, serialize
 from app.identity.service import db_session, permit
 from app.notifications.models import OutboxMessage
@@ -49,7 +50,7 @@ def _feed_item(row):
 @router.get("/feed")
 async def notification_feed(
     page: int = Query(default=1, ge=1),
-    size: int = Query(default=10, ge=10, le=50),
+    size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     db=Depends(db_session),
     actor=Depends(permit("messaging.notification_delivery.read")),
 ):

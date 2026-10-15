@@ -47,6 +47,7 @@ class CredentialInput(BaseModel):
 class LocationInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     address: str = Field(default="", max_length=500)
+    phone: str = Field(default="", max_length=40)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     osm_place_id: str = Field(default="", max_length=120)

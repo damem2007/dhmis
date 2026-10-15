@@ -1,6 +1,7 @@
 """Patient portal care routes."""
 
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -99,6 +100,7 @@ class PortalPayment(BaseModel):
 class PortalPlan(BaseModel):
     installments: int = Field(ge=2, le=24)
     first_due: date
+    frequency: Literal["monthly", "biweekly"] = "monthly"
 
 
 # Handle pay invoice for this module.
@@ -133,7 +135,14 @@ async def create_plan(
     invoice = await required(db, Invoice, identifier)
     await require_patient_access(db, actor, invoice.patient_id)
     return serialize(
-        await create_payment_plan(db, actor, invoice.id, body.installments, body.first_due)
+        await create_payment_plan(
+            db,
+            actor,
+            invoice.id,
+            body.installments,
+            body.first_due,
+            body.frequency,
+        )
     )
 
 
@@ -161,5 +170,4 @@ async def statement(
         history.append({**serialize(entry), "running_balance_cents": balance})
     audit(db, actor.user_id, "portal.statement", "ledger", patient_id)
     return {"patient_id": patient_id, "balance_cents": balance, "entries": history, "payment_plans": [serialize(x) for x in plans], "invoice_count": len(invoices)}
-
 

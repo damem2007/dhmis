@@ -16,6 +16,7 @@ from sqlalchemy import delete, func, or_, select, update
 from app.billing.models import Invoice
 from app.core.audit import audit
 from app.core.database import control_session, organization_session
+from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.core.repository import add, required, serialize
 from app.core.timezones import annotate_geocode_results
 from app.identity.access import invite_assignments, user_assignments
@@ -115,6 +116,7 @@ class Onboarding(BaseModel):
     region: str = Field(default="CA", pattern="^[A-Z]{2}$")
     location_name: str = Field(min_length=2, max_length=160)
     location_address: str = Field(default="", max_length=500)
+    location_phone: str = Field(default="", max_length=40)
     location_latitude: float | None = Field(default=None, ge=-90, le=90)
     location_longitude: float | None = Field(default=None, ge=-180, le=180)
     location_osm_place_id: str = Field(default="", max_length=120)
@@ -324,6 +326,7 @@ class RoutingConfiguration(BaseModel):
 class PlatformLocationInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     address: str = Field(default="", max_length=500)
+    phone: str = Field(default="", max_length=40)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     osm_place_id: str = Field(default="", max_length=120)
@@ -721,6 +724,7 @@ async def onboarding(
                 {
                     "name": body.location_name,
                     "address": body.location_address,
+                    "phone": body.location_phone,
                     "latitude": body.location_latitude,
                     "longitude": body.location_longitude,
                     "osm_place_id": body.location_osm_place_id,
@@ -728,6 +732,10 @@ async def onboarding(
                 },
                 "platform",
             )
+        elif body.location_phone:
+            # Complete onboarding captures the phone for an existing first location too.
+            location.phone = body.location_phone
+            location.updated_by = actor.user_id
         existing = await db.scalar(select(StaffUser).where(StaffUser.email == body.admin_email.lower()))
         invitation = (
             None
@@ -1071,7 +1079,7 @@ async def platform_organizations_query(
     status: str | None = Query(default=None, max_length=30),
     plan: str | None = Query(default=None, max_length=80),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("organizations.organization_tenant_record.read")),
 ):
     async with control_session() as db:
@@ -1177,7 +1185,7 @@ async def platform_audit_query(
     action: str | None = Query(default=None, max_length=100),
     organization_id: str | None = Query(default=None, max_length=36),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("audit.platform_audit_events.search")),
 ):
     async with control_session() as db:
@@ -1636,7 +1644,7 @@ async def platform_support_assignees(
 @router.get("/platform/support/activity")
 async def platform_support_activity(
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=1, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     ticket_id: str | None = Query(default=None, max_length=36),
     tenant_id: UUID | None = Query(default=None),
     search: str = Query(default="", max_length=120),
@@ -1946,7 +1954,7 @@ async def platform_billing_subscriptions(
     search: str | None = Query(default=None, max_length=160),
     status: str | None = Query(default=None, max_length=30),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.subscription_record.read")),
 ):
     async with control_session() as db:
@@ -2115,7 +2123,7 @@ async def platform_financial_operations(
     search: str | None = Query(default=None, max_length=160),
     status: str | None = Query(default=None, max_length=30),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("commercial.commercial_account.read")),
 ):
     async with control_session() as db:
@@ -2252,7 +2260,7 @@ async def platform_access_query(
     status: str | None = Query(default=None, pattern="^(active|disabled|pending|expired|revoked)$"),
     role: str | None = Query(default=None, max_length=80),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     actor: PlatformActor = Depends(permit_platform_or_bootstrap("access.platform_user.read")),
 ):
     now = int(time.time())
@@ -3240,7 +3248,7 @@ async def organization_access_roles(db=Depends(db_session), actor=Depends(permit
 async def organization_access_query(
     kind: str = Query(pattern="^(staff|invitation)$"),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, ge=10, le=100),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=10, le=MAX_PAGE_SIZE),
     search: str = Query(default="", max_length=160),
     status: str = Query(default="", max_length=30),
     role: str = Query(default="", max_length=30),

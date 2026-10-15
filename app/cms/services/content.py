@@ -110,6 +110,7 @@ async def default_content(db, organization) -> dict:
             }
             for item in locations
         ],
+        location_rotation_enabled=False,
     ).model_dump(mode="json")
 
 
