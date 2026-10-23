@@ -1,6 +1,7 @@
 import base64
 import secrets
 import time
+from datetime import UTC, datetime
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,10 +21,18 @@ from app.identity.models import (
     StaffUser,
 )
 from app.identity.passwords import hash_password, verify_password
-from app.identity.recovery import revoke_staff_sessions
+from app.identity.password_policy import (
+    effective_password_policy,
+    password_expired,
+    password_expiry_at,
+    password_expiry_days_remaining,
+    validate_password,
+)
+from app.identity.recovery import issue_password_reset_and_deliver, revoke_staff_sessions
 from app.identity.security import digest, vault, verify_totp
 from app.identity.service import Actor, current_actor, db_session, issue_token, staff_user_available
 from app.organizations.tenant_resolution import organization_from_login
+from app.organizations.configuration import tenant_settings
 
 router = APIRouter(prefix="/auth", tags=["Staff identity"])
 DUMMY_HASH = hash_password(secrets.token_urlsafe(32))
@@ -58,7 +67,7 @@ class ProfileUpdate(BaseModel):
 # Defines the password change model, contract, or value object.
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=12, max_length=128)
+    new_password: str = Field(min_length=1, max_length=128)
 
 
 # Defines the password reset complete model, contract, or value object.
@@ -66,8 +75,9 @@ class PasswordResetComplete(BaseModel):
     organization_id: str | None = None
     tenant_slug: str | None = None
     token: str = Field(min_length=20, max_length=200)
-    new_password: str = Field(min_length=12, max_length=128)
-
+    new_password: str = Field(min_length=1, max_length=128)
+    password_confirmation: str = Field(min_length=1, max_length=128)
+    code: str = Field(pattern=r"^\d{6}$")
 
 
 # Handle throttle for this module.
@@ -141,6 +151,22 @@ async def login(body: Login, request: Request):
         )
         if not valid:
             return JSONResponse(status_code=401, content={"detail": "Invalid credentials"})
+        policy = effective_password_policy((await tenant_settings(db)).policy.get("password_policy"))
+        if password_expired(user.password_changed_at, policy):
+            if user.mfa_enabled and user.mfa_secret and user.external_subject is None:
+                await issue_password_reset_and_deliver(
+                    db,
+                    user,
+                    org,
+                    initiated_by=user.id,
+                    reason="Expired password self-service recovery",
+                    clinic_name=org.name,
+                    tenant_slug=org.slug,
+                )
+            return JSONResponse(
+                status_code=403,
+                content={"detail": {"code": "password_expired", "message": "A reset link has been sent to your registered email address.", "reset_available": bool(user.mfa_enabled and user.mfa_secret and user.external_subject is None)}},
+            )
         previous = (
             await db.scalars(
                 select(AuthChallenge).where(AuthChallenge.user_id == user.id, AuthChallenge.used.is_(False))
@@ -221,13 +247,18 @@ async def logout(db=Depends(db_session), actor: Actor = Depends(current_actor)):
 
 # Handle me for this module.
 @router.get("/me")
-async def me(actor: Actor = Depends(current_actor)):
+async def me(db=Depends(db_session), actor: Actor = Depends(current_actor)):
     from app.identity.service import ROLE_PERMISSIONS
+
+    user = await db.get(StaffUser, actor.user_id)
+    policy = effective_password_policy((await tenant_settings(db)).policy.get("password_policy"))
+    expiry_at = password_expiry_at(user.password_changed_at if user else None, policy)
 
     return {
         "id": actor.user_id,
         "name": actor.name,
         "role": actor.role,
+        "role_id": actor.role_id,
         "selected_location_id": actor.selected_location_id,
         "assignments": actor.assignments,
         "organization_id": actor.organization.id,
@@ -244,6 +275,9 @@ async def me(actor: Actor = Depends(current_actor)):
         "logo_url": actor.settings.logo_url,
         "photo_url": actor.photo_url,
         "local_password": actor.local_password,
+        "password_expires_at": expiry_at.isoformat() if expiry_at else None,
+        "password_expires_in_days": password_expiry_days_remaining(user.password_changed_at if user else None, policy),
+        "password_expired": password_expired(user.password_changed_at if user else None, policy),
     }
 
 
@@ -274,7 +308,12 @@ async def change_password(
         raise HTTPException(409, "Password is managed by the configured identity provider")
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(401, "Current password is incorrect")
+    policy = effective_password_policy((await tenant_settings(db)).policy.get("password_policy"))
+    password_error = validate_password(body.new_password, policy)
+    if password_error:
+        raise HTTPException(422, password_error)
     user.password_hash = hash_password(body.new_password)
+    user.password_changed_at = datetime.now(UTC)
     user.token_version += 1
     user.updated_by = actor.user_id
     await revoke_staff_sessions(db, user, actor_id=actor.user_id)
@@ -303,7 +342,21 @@ async def complete_password_reset(body: PasswordResetComplete):
         user = await db.get(StaffUser, challenge.user_id)
         if user is None or not staff_user_available(user) or user.external_subject is not None:
             raise HTTPException(401, "Password reset token is invalid or expired")
+        if body.new_password != body.password_confirmation:
+            raise HTTPException(422, "Passwords do not match")
+        if not user.mfa_enabled or not user.mfa_secret:
+            raise HTTPException(401, "MFA must be enrolled before resetting the password")
+        counter = verify_totp(vault().open(user.mfa_secret), body.code, user.mfa_counter)
+        if counter is None:
+            audit(db, user.id, "password-reset.mfa-failure", "staff", user.id)
+            raise HTTPException(401, "A valid unused authenticator code is required")
+        policy = effective_password_policy((await tenant_settings(db)).policy.get("password_policy"))
+        password_error = validate_password(body.new_password, policy)
+        if password_error:
+            raise HTTPException(422, password_error)
         user.password_hash = hash_password(body.new_password)
+        user.password_changed_at = datetime.now(UTC)
+        user.mfa_counter = counter
         user.token_version += 1
         user.updated_by = user.id
         challenge.used = True

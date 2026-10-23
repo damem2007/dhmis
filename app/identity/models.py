@@ -25,7 +25,13 @@ class StaffUser(Record, Base):
     email: Mapped[str] = mapped_column(String(254), unique=True)
     name: Mapped[str] = mapped_column(String(160))
     password_hash: Mapped[str] = mapped_column(String(300))
-    role: Mapped[str] = mapped_column(String(30), default="admin")
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Legacy compatibility marker; canonical access is scoped role assignment.
+    # Human-readable compatibility display; canonical authorization uses role_id.
+    role: Mapped[str] = mapped_column(String(160), default="admin")
+    role_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tenant.tenant_roles.id"), nullable=True, index=True
+    )
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Being assigned a clinical role does not by itself make someone a
     # patient-facing provider.  Platform and tenant administrators can be

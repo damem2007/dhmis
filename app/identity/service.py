@@ -1,11 +1,11 @@
 import time
-from datetime import UTC, datetime
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from app.core.audit import audit
 from app.core.config import settings
@@ -30,6 +30,52 @@ ROLE_PERMISSIONS = {
     for item in default_role_definitions()
 }
 ROLE_DEFINITIONS = {item["name"]: item for item in default_role_definitions()}
+TENANT_SUPER_ADMIN_ROLE_ID = "tenant-super-admin"
+
+
+def is_tenant_super_admin_role(role_id: str | None, role_name: str | None = None) -> bool:
+    """Recognize the protected tenant role in canonical and legacy rows."""
+
+    normalized_id = str(role_id or "").strip().casefold().replace("_", "-")
+    return normalized_id == TENANT_SUPER_ADMIN_ROLE_ID
+
+
+def legacy_module_permissions_for_role(
+    role_id: str | None,
+    canonical_role_name: str | None = None,
+) -> set[str]:
+    """Return compatibility module aliases for a canonical default role.
+
+    A few older routers still use a module-only guard (for example
+    ``dashboard``), while the approved registry is action/resource based and
+    does not contain a permission resource for every legacy module.  The
+    canonical role id is the source of truth here.  ``canonical_role_name``
+    is accepted only when it was resolved from that id through ``tenant_roles``;
+    the informational ``staff_users.role`` label is never consulted.
+    """
+
+    if not role_id:
+        return set()
+    if is_tenant_super_admin_role(role_id, canonical_role_name):
+        # The protected setup role is intentionally tenant-wide.  It receives
+        # every reviewed tenant permission plus the legacy module aliases
+        # required by older endpoints.
+        return {
+            permission.split(".", 1)[0]
+            for definition in ROLE_DEFINITIONS.values()
+            for permission in (
+                set(definition.get("modules", ()))
+                | set(definition.get("compatibility_permissions", ()))
+                | set(definition.get("additional_permissions", ()))
+            )
+        }
+    compatibility = ROLE_PERMISSIONS.get(canonical_role_name or "") or ROLE_PERMISSIONS.get(
+        role_id, set()
+    )
+    return {
+        permission.split(".", 1)[0]
+        for permission in compatibility
+    }
 
 
 # Handle staff user available for this module.
@@ -48,22 +94,80 @@ def role_has(role: str, permission: str) -> bool:
 
 # Handle user has module for this module.
 async def user_has_module(db, user: StaffUser, module: str) -> bool:
-    if role_has(user.role, module):
+    if is_tenant_super_admin_role(user.role_id, user.role):
+        # The protected role is defined as tenant-wide access.  Provider and
+        # care-team validation must not depend on a denormalized grant row
+        # being present before the tenant repair migration runs.
+        return True
+    if user.role_id is None and role_has(user.role, module):
         return True
     from app.rbac.models import TenantRole, TenantRoleAssignment, TenantRoleGrant
 
+    canonical_grant = await db.scalar(
+        select(TenantRoleGrant.id)
+        .join(TenantRole, TenantRole.id == TenantRoleGrant.role_id)
+        .join(TenantRoleAssignment, TenantRoleAssignment.role_id == TenantRole.id)
+        .where(
+            TenantRoleAssignment.user_id == user.id,
+            TenantRole.status == "published",
+            TenantRoleGrant.effect == "allow",
+            TenantRoleGrant.permission_key.like(f"{module}.%"),
+        )
+        .limit(1)
+    )
+    if canonical_grant:
+        return True
+    # A canonical assignment is authoritative even when it does not grant the
+    # requested module; only users with no canonical assignment may use the
+    # legacy staff-location projection.
+    if await db.scalar(
+        select(TenantRoleAssignment.id)
+        .where(TenantRoleAssignment.user_id == user.id)
+        .limit(1)
+    ):
+        return False
+    return await _legacy_user_has_module(db, user, module)
+
+
+async def _legacy_user_has_module(db, user: StaffUser, module: str) -> bool:
+    """Evaluate a legacy role projection until canonical assignments exist."""
+    from app.identity.models import StaffLocationAssignment
+    from app.rbac.models import TenantRole, TenantRoleGrant
+
+    identifiers = {
+        value.strip().casefold()
+        for value in (user.role_id, user.role)
+        if isinstance(value, str) and value.strip()
+    }
+    if not identifiers:
+        return False
+    role = await db.scalar(
+        select(TenantRole).where(
+            TenantRole.status == "published",
+            or_(
+                TenantRole.id.in_(identifiers),
+                func.lower(TenantRole.name).in_(identifiers),
+            ),
+        )
+    )
+    if role is None:
+        return False
+    assignment = await db.scalar(
+        select(StaffLocationAssignment.id).where(
+            StaffLocationAssignment.user_id == user.id,
+            StaffLocationAssignment.active,
+            func.lower(StaffLocationAssignment.role).in_(identifiers),
+        )
+    )
+    if assignment is None:
+        return False
     return bool(
         await db.scalar(
-            select(TenantRoleGrant.id)
-            .join(TenantRole, TenantRole.id == TenantRoleGrant.role_id)
-            .join(TenantRoleAssignment, TenantRoleAssignment.role_id == TenantRole.id)
-            .where(
-                TenantRoleAssignment.user_id == user.id,
-                TenantRole.status == "published",
+            select(TenantRoleGrant.id).where(
+                TenantRoleGrant.role_id == role.id,
                 TenantRoleGrant.effect == "allow",
                 TenantRoleGrant.permission_key.like(f"{module}.%"),
             )
-            .limit(1)
         )
     )
 
@@ -161,6 +265,7 @@ class Actor:
     name: str
     role: str
     session_id: str = ""
+    role_id: str | None = None
     location_ids: list[str] = field(default_factory=list)
     settings: TenantSettings | None = None
     adapter_names: dict[str, str] = field(default_factory=dict)
@@ -237,17 +342,62 @@ async def current_actor(
             ):
                 raise ValueError()
             session.last_active = now
-            runtime_settings = await tenant_settings(db)
-            access = await effective_access(db, user, request.headers.get("X-DHMIS-Location"))
-            from app.rbac.models import TenantRole, TenantRoleGrant
+            # Existing tenants may have been provisioned before the protected
+            # Tenant Super Admin assignment was introduced. Repair that
+            # bootstrap projection lazily during an authenticated request so
+            # the admin is not left with a disabled UI while waiting for a
+            # migration. The helper is idempotent and only promotes the first
+            # organization-level legacy admin when no protected assignment
+            # exists in the tenant.
+            from app.rbac.bootstrap import (
+                ensure_tenant_super_admin_grants,
+                seed_tenant_super_admin,
+            )
+            from app.rbac.models import TenantRole, TenantRoleAssignment
 
-            role_row = await db.scalar(
-                select(TenantRole).where(
-                    TenantRole.name == access.role,
-                    TenantRole.status == "published",
+            protected_role_exists = await db.scalar(
+                select(TenantRole.id).where(TenantRole.id == TENANT_SUPER_ADMIN_ROLE_ID)
+            )
+            protected_assignment_exists = await db.scalar(
+                select(TenantRoleAssignment.id).where(
+                    TenantRoleAssignment.role_id == TENANT_SUPER_ADMIN_ROLE_ID
                 )
             )
-            modules = set(ROLE_DEFINITIONS.get(access.role, {}).get("modules", []))
+            if not protected_role_exists or not protected_assignment_exists:
+                await seed_tenant_super_admin(
+                    db,
+                    "auth-superadmin-reconciliation",
+                    sync_legacy=False,
+                    assign_first_legacy_admin=True,
+                )
+            else:
+                # Reconcile newly approved protected permissions before the
+                # actor payload is built, so /auth/me immediately exposes the
+                # same rights that the policy engine will enforce.
+                await ensure_tenant_super_admin_grants(db)
+            runtime_settings = await tenant_settings(db)
+            access = await effective_access(db, user, request.headers.get("X-DHMIS-Location"))
+            from app.rbac.models import TenantRoleGrant
+
+            role_row = await db.get(TenantRole, access.role_id) if access.role_id else None
+            # Older staff records store the default role name in role_id while
+            # canonical TenantRole rows use UUIDs. Resolve that compatibility
+            # shape by name so the actor still receives the role's exact
+            # resource grants until the assignment projection is reconciled.
+            if role_row is None:
+                role_row = await db.scalar(
+                    select(TenantRole).where(
+                        func.lower(TenantRole.name) == str(access.role).strip().lower(),
+                        TenantRole.status == "published",
+                    )
+                )
+            # Keep the frontend's compatibility aliases keyed by the
+            # canonical role id.  ``StaffUser.role`` is display-only after
+            # role references were introduced and must not decide access.
+            modules = legacy_module_permissions_for_role(
+                access.role_id,
+                role_row.name if role_row is not None else access.role,
+            )
             if role_row is not None:
                 grants = (
                     await db.scalars(
@@ -257,20 +407,40 @@ async def current_actor(
                         )
                     )
                 ).all()
-                modules.update(grant.permission_key.split(".", 1)[0] for grant in grants)
+                for grant in grants:
+                    # Expose both the exact grant and its module root.  The
+                    # former is used by action-level UI controls; the latter
+                    # keeps the existing navigation contract working.
+                    modules.add(grant.permission_key)
+                    modules.add(grant.permission_key.split(".", 1)[0])
+            if is_tenant_super_admin_role(
+                access.role_id,
+                role_row.name if role_row is not None else access.role,
+            ):
+                # The protected role is policy-defined as every active,
+                # reviewed tenant permission.  Do not make the UI depend on
+                # a repair migration having populated a denormalized grant
+                # row before it can render the tenant workspace.
+                from app.rbac.registry import load_approved_registry
+
+                approved = load_approved_registry()
+                for (domain, key), definition in approved.permissions.items():
+                    if domain != "tenant" or definition.retired or not definition.reviewed:
+                        continue
+                    modules.add(key)
+                    modules.add(key.split(".", 1)[0])
         return Actor(
             user.id,
             org,
             user.name,
             access.role,
             session.id,
-            (
-                access.available_location_ids
-                if access.scope == "organization"
-                else [access.selected_location_id]
-                if access.selected_location_id
-                else []
-            ),
+            access.role_id,
+            # Keep every location assigned to the staff member available to
+            # scope patient and dashboard queries. The selected location is
+            # still carried separately as the active context.
+            access.available_location_ids
+            or ([access.selected_location_id] if access.selected_location_id else []),
             runtime_settings,
             adapter_names,
             user.photo_url,
@@ -297,13 +467,28 @@ async def db_session(actor: Actor = Depends(current_actor)):
 def permit(permission):
     # Handle guard for this module.
     async def guard(request: Request, actor: Actor = Depends(current_actor)):
+        # Canonical role ids are authoritative for the role lookup. Preserve
+        # the old module-only compatibility guards for the resolved canonical
+        # role name, and explicitly honor
+        # the protected Tenant Super Admin role for legacy modules that have
+        # no action/resource entry in the approved registry (dashboard is one
+        # example).  The exact tenant permission guards still run through the
+        # canonical policy engine.
         allowed = permission in ROLE_PERMISSIONS.get(actor.role, set())
+        if not allowed and actor.role_id == TENANT_SUPER_ADMIN_ROLE_ID:
+            # The canonical role is global policy, but this guard still only
+            # accepts approved tenant permissions and legacy module aliases.
+            # It must never become an arbitrary wildcard if a platform route
+            # is accidentally wired to the tenant dependency.
+            allowed = permission in getattr(actor, "modules", ()) or permission in (
+                legacy_module_permissions_for_role(actor.role_id, actor.role)
+            )
         if not allowed:
             allowed = await canonical_permission_allowed(request, actor, permission)
         if not allowed:
             async with organization_session(actor.organization) as db:
                 audit(db, actor.user_id, "access.denied", permission, organization_id=actor.organization.id)
-            raise HTTPException(403, "Permission denied")
+            raise HTTPException(403, {"message": "Permission denied", "required_permissions": [permission]})
         return actor
 
     return guard

@@ -13,6 +13,7 @@ REGION_DEFAULTS = {
         "currency": "CAD",
         "tax_defaults": {"tax_rate_basis_points": 0},
         "residency_defaults": {"data_residency": "CA"},
+        "code_set_type": "CDA",
     },
     "US": {
         "name": "United States",
@@ -22,6 +23,7 @@ REGION_DEFAULTS = {
         "currency": "USD",
         "tax_defaults": {"tax_rate_basis_points": 0},
         "residency_defaults": {"data_residency": "US"},
+        "code_set_type": "CDT",
     },
 }
 
@@ -33,6 +35,9 @@ async def ensure_region_registry(db, actor_id: str = "region-bootstrap"):
         row = rows.get(code)
         if row is None:
             db.add(PlatformRegion(code=code, enabled=True, created_by=actor_id, updated_by=actor_id, **values))
+        elif not row.code_set_type:
+            row.code_set_type = values["code_set_type"]
+            row.updated_by = actor_id
     await db.flush()
 
 

@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from app.claims.models import InsurancePlan
 from app.core.database import control_session, dispose_engines, tenant_session
+from app.core.secure_fields import email_lookup
 from app.organizations.models import Location, Organization
 from app.patients.models import Patient
 
@@ -47,12 +48,14 @@ def patient_values(index: int, location_id: str) -> dict[str, object]:
     """Return a synthetic patient record that is safe to rerun."""
 
     sequence = f"{index:05d}"
+    email = f"{SYNTHETIC_EMAIL_PREFIX}{sequence}{SYNTHETIC_EMAIL_DOMAIN}"
     return {
         "id": str(uuid4()),
         "first_name": "Load",
         "last_name": f"Test {sequence}",
         "birth_date": date(1970, 1, 1) + timedelta(days=index % 14000),
-        "email": f"{SYNTHETIC_EMAIL_PREFIX}{sequence}{SYNTHETIC_EMAIL_DOMAIN}",
+        "email": email,
+        "email_lookup": email_lookup(email),
         "phone": f"+155500{index:05d}",
         "allergies": [],
         "location_id": location_id,
@@ -102,9 +105,11 @@ async def seed(count: int, with_insurance: bool) -> dict[str, int | str]:
         if not locations:
             raise RuntimeError("The Smile tenant has no active location for synthetic patients")
 
-        existing = (
-            await db.scalars(select(Patient).where(Patient.email.like(f"{SYNTHETIC_EMAIL_PREFIX}%")))
-        ).all()
+        existing = [
+            row
+            for row in (await db.scalars(select(Patient))).all()
+            if row.email.startswith(SYNTHETIC_EMAIL_PREFIX)
+        ]
         existing_by_email = {row.email for row in existing}
         target = min(count, 99999)
         missing = target - len(existing_by_email)
@@ -115,7 +120,7 @@ async def seed(count: int, with_insurance: bool) -> dict[str, int | str]:
                     select(func.count())
                     .select_from(InsurancePlan)
                     .join(Patient, InsurancePlan.patient_id == Patient.id)
-                    .where(Patient.email.like(f"{SYNTHETIC_EMAIL_PREFIX}%"))
+                    .where(InsurancePlan.patient_id.in_([row.id for row in existing]))
                 )
             return {
                 "tenant": organization.slug,

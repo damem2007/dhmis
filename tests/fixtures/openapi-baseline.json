@@ -87,6 +87,71 @@
         "title": "ActionUpdate",
         "type": "object"
       },
+      "ActivationInput": {
+        "description": "Validate the licence attestation required before code import.",
+        "properties": {
+          "attested": {
+            "title": "Attested",
+            "type": "boolean"
+          },
+          "licence_holder": {
+            "maxLength": 180,
+            "minLength": 1,
+            "title": "Licence Holder",
+            "type": "string"
+          },
+          "licence_reference": {
+            "maxLength": 180,
+            "minLength": 1,
+            "title": "Licence Reference",
+            "type": "string"
+          },
+          "source_content_base64": {
+            "default": "",
+            "maxLength": 70000000,
+            "title": "Source Content Base64",
+            "type": "string"
+          },
+          "source_file_name": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Source File Name",
+            "type": "string"
+          },
+          "source_file_size": {
+            "default": 0,
+            "maximum": 50000000.0,
+            "minimum": 0.0,
+            "title": "Source File Size",
+            "type": "integer"
+          },
+          "source_mime_type": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Source Mime Type",
+            "type": "string"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "required": [
+          "licence_holder",
+          "licence_reference",
+          "attested"
+        ],
+        "title": "ActivationInput",
+        "type": "object"
+      },
       "AdapterDecision": {
         "properties": {
           "approval_request_id": {
@@ -588,6 +653,104 @@
         "title": "Cancellation",
         "type": "object"
       },
+      "CatalogueItemInput": {
+        "description": "Validate a tenant treatment, condition, or tooth-status catalogue item.",
+        "properties": {
+          "appearance_key": {
+            "default": "healthy",
+            "maxLength": 60,
+            "title": "Appearance Key",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "draw_on": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Draw On",
+            "type": "string"
+          },
+          "fee_source": {
+            "default": "services",
+            "maxLength": 40,
+            "title": "Fee Source",
+            "type": "string"
+          },
+          "item_type": {
+            "enum": [
+              "treatment",
+              "condition",
+              "tooth_status"
+            ],
+            "title": "Item Type",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 180,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "procedure_code_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Procedure Code Id"
+          },
+          "quick_chart": {
+            "default": false,
+            "title": "Quick Chart",
+            "type": "boolean"
+          },
+          "resolved_by": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Resolved By",
+            "type": "string"
+          },
+          "service_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Id"
+          },
+          "tooth_status_effect": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Tooth Status Effect",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_type",
+          "code",
+          "name"
+        ],
+        "title": "CatalogueItemInput",
+        "type": "object"
+      },
       "ChartInput": {
         "properties": {
           "condition": {
@@ -641,6 +804,66 @@
           "condition"
         ],
         "title": "ChartInput",
+        "type": "object"
+      },
+      "ClinicalChartSettingsInput": {
+        "description": "Validate persisted, tenant-wide clinical chart display preferences.",
+        "properties": {
+          "default_numbering_system": {
+            "default": "universal",
+            "enum": [
+              "universal",
+              "fdi",
+              "palmer"
+            ],
+            "title": "Default Numbering System",
+            "type": "string"
+          },
+          "dentition_age_ranges": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Dentition Age Ranges",
+            "type": "object"
+          },
+          "enabled_numbering_systems": {
+            "items": {
+              "enum": [
+                "universal",
+                "fdi",
+                "palmer"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Enabled Numbering Systems",
+            "type": "array"
+          },
+          "procedure_code_set": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Procedure Code Set",
+            "type": "string"
+          },
+          "save_mode": {
+            "default": "manual",
+            "enum": [
+              "manual",
+              "auto"
+            ],
+            "title": "Save Mode",
+            "type": "string"
+          }
+        },
+        "title": "ClinicalChartSettingsInput",
         "type": "object"
       },
       "CmsContentInput": {
@@ -742,49 +965,6 @@
           "headline"
         ],
         "title": "CmsContentInput",
-        "type": "object"
-      },
-      "CodeInput": {
-        "properties": {
-          "challenge_token": {
-            "maxLength": 200,
-            "minLength": 20,
-            "title": "Challenge Token",
-            "type": "string"
-          },
-          "code": {
-            "pattern": "^\\d{6}$",
-            "title": "Code",
-            "type": "string"
-          },
-          "organization_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Organization Id"
-          },
-          "tenant_slug": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tenant Slug"
-          }
-        },
-        "required": [
-          "challenge_token",
-          "code"
-        ],
-        "title": "CodeInput",
         "type": "object"
       },
       "CommunicationTemplateInput": {
@@ -1714,6 +1894,29 @@
         "title": "LoginInput",
         "type": "object"
       },
+      "MappingInput": {
+        "description": "Validate a service-to-code mapping request.",
+        "properties": {
+          "procedure_code_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Procedure Code Id",
+            "type": "string"
+          },
+          "service_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Service Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service_id",
+          "procedure_code_id"
+        ],
+        "title": "MappingInput",
+        "type": "object"
+      },
       "MediaInput": {
         "properties": {
           "alt_text": {
@@ -2256,6 +2459,11 @@
             "maxLength": 40,
             "title": "Phone",
             "type": "string"
+          },
+          "send_portal_invitation": {
+            "default": true,
+            "title": "Send Portal Invitation",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3000,6 +3208,15 @@
             "title": "First Due",
             "type": "string"
           },
+          "frequency": {
+            "default": "monthly",
+            "enum": [
+              "monthly",
+              "biweekly"
+            ],
+            "title": "Frequency",
+            "type": "string"
+          },
           "installments": {
             "maximum": 24.0,
             "minimum": 2.0,
@@ -3283,6 +3500,51 @@
           "confirmed_scope"
         ],
         "title": "PublishInput",
+        "type": "object"
+      },
+      "QuickChartSetInput": {
+        "description": "Validate an ordered Quick chart shortcut set.",
+        "properties": {
+          "description": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "QuickChartSetInput",
+        "type": "object"
+      },
+      "QuoteInput": {
+        "description": "Select one treatment-plan option for an immutable quote snapshot.",
+        "properties": {
+          "option_index": {
+            "minimum": 0.0,
+            "title": "Option Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "option_index"
+        ],
+        "title": "QuoteInput",
         "type": "object"
       },
       "RecoveryAction": {
@@ -4369,11 +4631,78 @@
         "title": "VerifyInput",
         "type": "object"
       },
+      "VersionImportInput": {
+        "description": "Validate a version import and its normalized code rows.",
+        "properties": {
+          "checksum": {
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Checksum",
+            "type": "string"
+          },
+          "codes": {
+            "items": {
+              "$ref": "#/components/schemas/app__code_library__schemas__CodeInput"
+            },
+            "maxItems": 100000,
+            "minItems": 1,
+            "title": "Codes",
+            "type": "array"
+          },
+          "source_content_base64": {
+            "default": "",
+            "maxLength": 70000000,
+            "title": "Source Content Base64",
+            "type": "string"
+          },
+          "source_file_name": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Source File Name",
+            "type": "string"
+          },
+          "source_file_size": {
+            "default": 0,
+            "maximum": 50000000.0,
+            "minimum": 0.0,
+            "title": "Source File Size",
+            "type": "integer"
+          },
+          "source_mime_type": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Source Mime Type",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "checksum",
+          "codes"
+        ],
+        "title": "VersionImportInput",
+        "type": "object"
+      },
       "app__billing__operations__PlanInput": {
         "properties": {
           "first_due": {
             "format": "date",
             "title": "First Due",
+            "type": "string"
+          },
+          "frequency": {
+            "default": "monthly",
+            "enum": [
+              "monthly",
+              "biweekly"
+            ],
+            "title": "Frequency",
             "type": "string"
           },
           "installments": {
@@ -4560,6 +4889,41 @@
         "title": "ServiceInput",
         "type": "object"
       },
+      "app__code_library__schemas__CodeInput": {
+        "description": "Validate one normalized procedure-code record.",
+        "properties": {
+          "category": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Category",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "pattern": "^(active|retired)$",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "description"
+        ],
+        "title": "CodeInput",
+        "type": "object"
+      },
       "app__identity__router__ChallengeInput": {
         "properties": {
           "challenge_token": {
@@ -4595,6 +4959,49 @@
           "challenge_token"
         ],
         "title": "ChallengeInput",
+        "type": "object"
+      },
+      "app__identity__router__CodeInput": {
+        "properties": {
+          "challenge_token": {
+            "maxLength": 200,
+            "minLength": 20,
+            "title": "Challenge Token",
+            "type": "string"
+          },
+          "code": {
+            "pattern": "^\\d{6}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          },
+          "tenant_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Slug"
+          }
+        },
+        "required": [
+          "challenge_token",
+          "code"
+        ],
+        "title": "CodeInput",
         "type": "object"
       },
       "app__identity__router__Login": {
@@ -4973,8 +5380,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -5436,8 +5843,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -5621,6 +6028,19 @@
     "/v1/appointments": {
       "get": {
         "operationId": "appointments_v1_appointments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "patient_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 36,
+              "title": "Patient Id",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5629,6 +6049,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [
@@ -6071,7 +6501,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CodeInput"
+                "$ref": "#/components/schemas/app__identity__router__CodeInput"
               }
             }
           },
@@ -6362,6 +6792,19 @@
     "/v1/billing/invoices": {
       "get": {
         "operationId": "invoices_v1_billing_invoices_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "patient_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 36,
+              "title": "Patient Id",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6370,6 +6813,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [
@@ -7572,9 +8025,9 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
-              "minimum": 10,
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
               "title": "Page Size",
               "type": "integer"
             }
@@ -7923,6 +8376,238 @@
         ]
       }
     },
+    "/v1/clinical/catalogue": {
+      "get": {
+        "description": "List tenant catalogue entries without duplicating service prices.",
+        "operationId": "catalogue_v1_clinical_catalogue_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "item_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(treatment|condition|tooth_status)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_inactive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Inactive",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Catalogue",
+        "tags": [
+          "Clinical charting"
+        ]
+      },
+      "post": {
+        "description": "Create a tenant catalogue item, validating any linked service.",
+        "operationId": "create_catalogue_item_v1_clinical_catalogue_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogueItemInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Catalogue Item",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/catalogue/{identifier}": {
+      "put": {
+        "description": "Update catalogue metadata while retaining the linked fee source.",
+        "operationId": "update_catalogue_item_v1_clinical_catalogue__identifier__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogueItemInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Catalogue Item",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/catalogue/{identifier}/archive": {
+      "post": {
+        "description": "Soft-archive a catalogue item so historical references remain valid.",
+        "operationId": "archive_catalogue_item_v1_clinical_catalogue__identifier__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Archive Catalogue Item",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
     "/v1/clinical/encounters/{identifier}": {
       "put": {
         "operationId": "encounter_update_v1_clinical_encounters__identifier__put",
@@ -8111,6 +8796,506 @@
         ]
       }
     },
+    "/v1/clinical/quick-chart-sets": {
+      "get": {
+        "description": "List active tenant Quick chart sets in their stored item order.",
+        "operationId": "quick_chart_sets_v1_clinical_quick_chart_sets_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_inactive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Inactive",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Quick Chart Sets",
+        "tags": [
+          "Clinical charting"
+        ]
+      },
+      "post": {
+        "description": "Create an ordered Quick chart set without introducing per-set roles.",
+        "operationId": "create_quick_chart_set_v1_clinical_quick_chart_sets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuickChartSetInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Quick Chart Set",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/quick-chart-sets/{identifier}": {
+      "put": {
+        "description": "Update a Quick chart set while preserving ordered shortcut semantics.",
+        "operationId": "update_quick_chart_set_v1_clinical_quick_chart_sets__identifier__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuickChartSetInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Quick Chart Set",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/quick-chart-sets/{identifier}/archive": {
+      "post": {
+        "description": "Soft-archive a Quick chart set without deleting chart history.",
+        "operationId": "archive_quick_chart_set_v1_clinical_quick_chart_sets__identifier__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Archive Quick Chart Set",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/quick-chart-sets/{identifier}/use": {
+      "get": {
+        "description": "Return one active shortcut set after enforcing use permission.",
+        "operationId": "use_quick_chart_set_v1_clinical_quick_chart_sets__identifier__use_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Use Quick Chart Set",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/quotes": {
+      "get": {
+        "description": "Return immutable quote revisions for one patient.",
+        "operationId": "patient_quotes_v1_clinical_quotes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "title": "Patient Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Patient Quotes",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/quotes/{identifier}/accept": {
+      "post": {
+        "description": "Record acceptance against this immutable quote revision.",
+        "operationId": "accept_quote_v1_clinical_quotes__identifier__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Accept Quote",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/quotes/{identifier}/recalculate": {
+      "post": {
+        "description": "Create a new quote revision using current Services & fees values.",
+        "operationId": "recalculate_quote_v1_clinical_quotes__identifier__recalculate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Recalculate Quote",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/quotes/{identifier}/status": {
+      "post": {
+        "description": "Record a quote presentation or outcome without rewriting its snapshot.",
+        "operationId": "update_quote_status_v1_clinical_quotes__identifier__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": true,
+            "schema": {
+              "pattern": "^(presented|declined|expired)$",
+              "title": "Status",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Quote Status",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
+    "/v1/clinical/settings": {
+      "get": {
+        "description": "Return tenant-scoped chart preferences without unrelated settings.",
+        "operationId": "clinical_chart_settings_v1_clinical_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Clinical Chart Settings",
+        "tags": [
+          "Clinical charting"
+        ]
+      },
+      "put": {
+        "description": "Persist reviewed chart display preferences for every user in this tenant.",
+        "operationId": "update_clinical_chart_settings_v1_clinical_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClinicalChartSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Clinical Chart Settings",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
     "/v1/clinical/treatment-plans": {
       "post": {
         "operationId": "plan_v1_clinical_treatment_plans_post",
@@ -8210,8 +9395,65 @@
         ]
       }
     },
+    "/v1/clinical/treatment-plans/{identifier}/quotes": {
+      "post": {
+        "description": "Create a versioned quote snapshot without changing the treatment plan.",
+        "operationId": "create_quote_v1_clinical_treatment_plans__identifier__quotes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Quote",
+        "tags": [
+          "Clinical charting"
+        ]
+      }
+    },
     "/v1/clinical/{patient_id}": {
       "get": {
+        "description": "Load a patient chart, optionally limiting the response to active-tab collections.",
         "operationId": "chart_v1_clinical__patient_id__get",
         "parameters": [
           {
@@ -8221,6 +9463,24 @@
             "schema": {
               "title": "Patient Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated clinical collections to load",
+            "in": "query",
+            "name": "include",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated clinical collections to load",
+              "title": "Include"
             }
           }
         ],
@@ -8873,6 +10133,285 @@
         "summary": "Rollback Publication",
         "tags": [
           "Front Office CMS"
+        ]
+      }
+    },
+    "/v1/code-library/activate": {
+      "post": {
+        "description": "Store a tenant licence attestation and activate its mapped library.",
+        "operationId": "activate_v1_code_library_activate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Activate",
+        "tags": [
+          "Tenant code library"
+        ]
+      }
+    },
+    "/v1/code-library/codes": {
+      "get": {
+        "description": "Search active tenant-owned codes without exposing control-plane content.",
+        "operationId": "codes_v1_code_library_codes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 120,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Codes",
+        "tags": [
+          "Tenant code library"
+        ]
+      }
+    },
+    "/v1/code-library/deactivate": {
+      "post": {
+        "description": "Soft-deactivate the mapped tenant library while preserving history.",
+        "operationId": "deactivate_v1_code_library_deactivate_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Deactivate",
+        "tags": [
+          "Tenant code library"
+        ]
+      }
+    },
+    "/v1/code-library/mappings": {
+      "post": {
+        "description": "Map an existing tenant service to an existing tenant procedure code.",
+        "operationId": "mapping_v1_code_library_mappings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MappingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Mapping",
+        "tags": [
+          "Tenant code library"
+        ]
+      }
+    },
+    "/v1/code-library/status": {
+      "get": {
+        "description": "Return activation metadata and the mapped platform code-set type.",
+        "operationId": "status_v1_code_library_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Status",
+        "tags": [
+          "Tenant code library"
+        ]
+      }
+    },
+    "/v1/code-library/versions": {
+      "get": {
+        "description": "List tenant-owned imported versions without exposing code content.",
+        "operationId": "versions_v1_code_library_versions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Versions",
+        "tags": [
+          "Tenant code library"
+        ]
+      },
+      "post": {
+        "description": "Import an idempotent, non-destructive tenant code-library version.",
+        "operationId": "import_version_v1_code_library_versions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VersionImportInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Import Version",
+        "tags": [
+          "Tenant code library"
         ]
       }
     },
@@ -9719,8 +11258,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 5,
-              "maximum": 200,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 1,
               "title": "Page Size",
               "type": "integer"
@@ -10030,9 +11569,9 @@
             "name": "size",
             "required": false,
             "schema": {
-              "default": 10,
-              "maximum": 50,
-              "minimum": 10,
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
               "title": "Size",
               "type": "integer"
             }
@@ -10568,8 +12107,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -11065,8 +12604,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -11905,6 +13444,99 @@
               "title": "Q",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Size"
+            }
+          },
+          {
+            "in": "query",
+            "name": "location_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 36,
+              "title": "Location Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "active",
+              "pattern": "^(active|archived|all)$",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "age_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 120,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Age From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "age_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 120,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Age To"
+            }
           }
         ],
         "responses": {
@@ -12025,6 +13657,50 @@
       }
     },
     "/v1/patients/{identifier}": {
+      "get": {
+        "description": "Return one patient record for the record view.",
+        "operationId": "detail_v1_patients__identifier__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Detail",
+        "tags": [
+          "Patients"
+        ]
+      },
       "put": {
         "operationId": "update_v1_patients__identifier__put",
         "parameters": [
@@ -12305,8 +13981,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -12571,8 +14247,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -13448,8 +15124,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -13662,8 +15338,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -14428,8 +16104,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 10,
               "title": "Page Size",
               "type": "integer"
@@ -16358,6 +18034,53 @@
         ]
       }
     },
+    "/v1/platform/regions/activation-summary": {
+      "get": {
+        "description": "Return aggregate activation status without exposing tenant code content.",
+        "operationId": "activation_summary_v1_platform_regions_activation_summary_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-bootstrap-key",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Bootstrap-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Activation Summary",
+        "tags": [
+          "Platform regions"
+        ]
+      }
+    },
     "/v1/platform/regions/{code}/status": {
       "put": {
         "operationId": "region_status_v1_platform_regions__code__status_put",
@@ -16544,8 +18267,8 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
-              "maximum": 100,
+              "default": 100,
+              "maximum": 1000,
               "minimum": 1,
               "title": "Page Size",
               "type": "integer"
@@ -17802,7 +19525,7 @@
             "name": "page_size",
             "required": false,
             "schema": {
-              "default": 25,
+              "default": 100,
               "title": "Page Size",
               "type": "integer"
             }
@@ -20157,6 +21880,93 @@
           }
         ],
         "summary": "Performance",
+        "tags": [
+          "Reporting"
+        ]
+      }
+    },
+    "/v1/reports/quotes": {
+      "get": {
+        "description": "Compare the latest quote revisions with billed invoice totals.",
+        "operationId": "quote_reconciliation_v1_reports_quotes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "patient_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Patient Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Quote Reconciliation",
         "tags": [
           "Reporting"
         ]

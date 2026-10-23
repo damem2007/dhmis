@@ -36,8 +36,9 @@ def _metadata(path: Path) -> tuple[str, str | None]:
 def test_migration_catalogue_is_a_single_complete_chain():
     files = sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9][0-9]_*.py"))
 
-    assert len(files) == 38
+    assert len(files) == 59
     revisions = [_metadata(path) for path in files]
+    assert all(len(revision) <= 32 for revision, _ in revisions)
     assert revisions[0] == ("0001", None)
     for previous, current in zip(revisions, revisions[1:]):
         assert current[1] == previous[0]
@@ -52,6 +53,12 @@ def test_migrations_do_not_embed_provisioned_tenant_identity():
         # "tenant" is a logical snapshot/prefix, but never a real schema
         # name. A guard against it would skip every provisioned schema.
         assert 'schema != "tenant"' not in source, path.name
+
+
+def test_default_role_permission_backfill_respects_registry_defaults():
+    """Upgrades must not auto-grant permissions marked assignable-only."""
+    source = (MIGRATIONS_DIR / "0034_default_role_permissions.py").read_text()
+    assert "permission.default_grant" in source
 
 
 def test_backend_definitions_have_maintainability_annotations():

@@ -28,6 +28,17 @@ class Scenario:
 
 # Defines the sandbox payments model, contract, or value object.
 class SandboxPayments(Scenario):
+    # Authorize a platform subscription payment method without charging it.
+    async def authorize_platform(self, request):
+        await self.check()
+        if not request.payment_method_token.strip():
+            raise ValueError("Payment method is required")
+        return PaymentResult(
+            reference("platform_payment", request.idempotency_key),
+            request.amount_cents,
+            status="authorized",
+        )
+
     # Handle capture for this module.
     async def capture(self, request):
         amount_cents = request.amount_cents

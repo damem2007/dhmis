@@ -2,10 +2,11 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 
 from app.billing.models import Invoice, LedgerEntry
-from app.clinical.models import Encounter
+from app.clinical.models import Encounter, Quote
+from app.core.repository import serialize
 from app.core.audit import audit
 from app.identity.models import StaffUser
 from app.identity.service import db_session, permit
@@ -13,6 +14,70 @@ from app.organizations.models import Location
 from app.scheduling.models import Appointment
 
 router = APIRouter(prefix="/reports", tags=["Reporting"])
+
+
+@router.get("/quotes")
+async def quote_reconciliation(
+    start: date | None = Query(default=None),
+    end: date | None = Query(default=None),
+    patient_id: str | None = Query(default=None),
+    db=Depends(db_session),
+    actor=Depends(permit("reports.quote.read")),
+):
+    """Compare the latest quote revisions with billed invoice totals."""
+    # A quote is immutable and can have several revisions. Reconcile only the
+    # newest non-superseded revision for each treatment-plan option.
+    latest_versions = (
+        select(
+            Quote.treatment_plan_id,
+            Quote.option_index,
+            func.max(Quote.version).label("latest_version"),
+        )
+        .where(Quote.status != "superseded")
+        .group_by(Quote.treatment_plan_id, Quote.option_index)
+        .subquery()
+    )
+    query = select(Quote).join(
+        latest_versions,
+        and_(
+            Quote.treatment_plan_id == latest_versions.c.treatment_plan_id,
+            Quote.option_index == latest_versions.c.option_index,
+            Quote.version == latest_versions.c.latest_version,
+        ),
+    )
+    if start and end:
+        beginning, ending = window(start, end)
+        query = query.where(Quote.created_at >= beginning, Quote.created_at < ending)
+    elif start or end:
+        raise HTTPException(422, "Both report dates are required")
+    if patient_id:
+        query = query.where(Quote.patient_id == patient_id)
+    quotes = (await db.scalars(query.order_by(Quote.created_at.desc()))).all()
+    billed = dict(
+        (
+            patient,
+            total,
+        )
+        for patient, total in (
+            await db.execute(
+                select(Invoice.patient_id, func.coalesce(func.sum(Invoice.total_cents), 0))
+                .where(Invoice.patient_id.in_({quote.patient_id for quote in quotes} or {""}))
+                .group_by(Invoice.patient_id)
+            )
+        ).all()
+    )
+    rows = []
+    for quote in quotes:
+        billed_cents = int(billed.get(quote.patient_id, 0))
+        rows.append(
+            {
+                **serialize(quote),
+                "billed_cents": billed_cents,
+                "variance_cents": billed_cents - quote.total_cents,
+            }
+        )
+    audit(db, actor.user_id, "report", "quotes", count=len(rows), patient_id=patient_id or "")
+    return {"items": rows, "total": len(rows)}
 
 
 # Handle window for this module.

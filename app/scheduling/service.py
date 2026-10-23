@@ -19,7 +19,7 @@ from app.scheduling.policy import apply_change_policy
 # Handle book for this module.
 async def book(db, actor, body, existing_id=None):
     location = await required(db, Location, body.location_id)
-    await required(db, Patient, body.patient_id)
+    patient = await required(db, Patient, body.patient_id)
     provider = await required(db, StaffUser, body.provider_id)
     await require_current_credentials(db, provider.id)
     if (
@@ -33,8 +33,15 @@ async def book(db, actor, body, existing_id=None):
         raise HTTPException(422, "Invalid chair or provider")
     if provider.location_ids and body.location_id not in provider.location_ids:
         raise HTTPException(422, "Provider is not assigned to this location")
-    start_local = body.starts_at.astimezone(ZoneInfo(location.timezone))
-    end_local = body.ends_at.astimezone(ZoneInfo(location.timezone))
+    zone = ZoneInfo(location.timezone)
+    # Booking forms submit local wall-clock values; explicit offsets from the
+    # public availability endpoint are preserved and normalized to UTC.
+    starts_at = body.starts_at.replace(tzinfo=zone) if body.starts_at.tzinfo is None else body.starts_at
+    ends_at = body.ends_at.replace(tzinfo=zone) if body.ends_at.tzinfo is None else body.ends_at
+    starts_at = starts_at.astimezone(UTC)
+    ends_at = ends_at.astimezone(UTC)
+    start_local = starts_at.astimezone(zone)
+    end_local = ends_at.astimezone(zone)
     if (
         start_local.date() != end_local.date()
         or start_local.hour < location.opening_hour
@@ -51,8 +58,8 @@ async def book(db, actor, body, existing_id=None):
     )
     query = select(Appointment).where(
         Appointment.status != "cancelled",
-        Appointment.starts_at < body.ends_at + buffer,
-        Appointment.ends_at > body.starts_at - buffer,
+        Appointment.starts_at < ends_at + buffer,
+        Appointment.ends_at > starts_at - buffer,
         or_(
             Appointment.provider_id == body.provider_id,
             (Appointment.location_id == body.location_id) & (Appointment.chair == body.chair),
@@ -63,18 +70,57 @@ async def book(db, actor, body, existing_id=None):
         query = query.where(Appointment.id != existing_id)
     if await db.scalar(query):
         raise HTTPException(409, "Patient, provider, or chair is already booked for this time")
+    previous_provider_id = None
     if existing_id:
         row = await required(db, Appointment, existing_id, lock=True)
         if row.status != "confirmed":
             raise HTTPException(409, "Only confirmed appointments can be rescheduled")
-        if row.starts_at != body.starts_at or row.ends_at != body.ends_at:
+        previous_provider_id = row.provider_id
+        if row.starts_at != starts_at or row.ends_at != ends_at:
             await apply_change_policy(db, actor, row, "Rescheduled appointment")
-        for key, value in body.model_dump().items():
-            setattr(row, key, value)
+        row.patient_id = body.patient_id
+        row.location_id = body.location_id
+        row.provider_id = body.provider_id
+        row.chair = body.chair
+        row.starts_at = starts_at
+        row.ends_at = ends_at
+        row.procedure = body.procedure
+        row.timezone = location.timezone
         row.updated_by = actor.user_id
     else:
-        row = await add(db, Appointment, body.model_dump(), actor.user_id)
+        row = await add(
+            db,
+            Appointment,
+            {
+                **body.model_dump(),
+                "starts_at": starts_at,
+                "ends_at": ends_at,
+                "timezone": location.timezone,
+            },
+            actor.user_id,
+        )
     await db.flush()
+    if not existing_id or previous_provider_id != row.provider_id:
+        provider_name = provider.name or provider.email
+        patient_name = f"{patient.first_name} {patient.last_name}".strip()
+        appointment_label = f"{patient_name} · {row.procedure} · {start_local.strftime('%b %-d, %Y at %-I:%M %p')}"
+        db.add(
+            OutboxMessage(
+                kind="appointment.assigned",
+                payload={
+                    "channel": "in_app",
+                    "recipient_user_id": provider.id,
+                    "location_id": row.location_id,
+                    "appointment_id": row.id,
+                    "patient_id": row.patient_id,
+                    "title": f"Appointment assigned to {provider_name}",
+                    "subject": appointment_label,
+                    "cta_label": "View appointment",
+                },
+                status="pending",
+                idempotency_key=f"appointment-assigned:{row.id}:{provider.id}:{row.updated_at.isoformat()}",
+            )
+        )
     db.add(
         OutboxMessage(
             kind="appointment.reminder",

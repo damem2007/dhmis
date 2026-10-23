@@ -5,7 +5,13 @@ from sqlalchemy.inspection import inspect
 
 # Handle serialize for this module.
 def serialize(record):
-    return {column.key: getattr(record, column.key) for column in inspect(record).mapper.column_attrs}
+    # Keyed lookup tokens support encrypted-field authentication/search and
+    # are never part of an API representation.
+    return {
+        column.key: getattr(record, column.key)
+        for column in inspect(record).mapper.column_attrs
+        if not column.key.endswith("_lookup")
+    }
 
 
 # Handle required for this module.

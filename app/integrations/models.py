@@ -14,6 +14,9 @@ class PlatformAdapterDefault(Record, Base):
     region: Mapped[str] = mapped_column(String(10), default="*")
     capability: Mapped[str] = mapped_column(String(80))
     provider_name: Mapped[str] = mapped_column(String(120))
+    # ``auto`` follows the installed provider registry. Platform operators can
+    # explicitly select sandbox or live through the Feature Flags page.
+    mode: Mapped[str] = mapped_column(String(20), default="auto")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -27,6 +30,7 @@ class TenantAdapterOverride(Record, Base):
     organization_id: Mapped[str] = mapped_column(String(36))
     capability: Mapped[str] = mapped_column(String(80))
     provider_name: Mapped[str] = mapped_column(String(120))
+    mode: Mapped[str] = mapped_column(String(20), default="auto")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     approved_by: Mapped[str] = mapped_column(String(100))
     approval_reason: Mapped[str] = mapped_column(String(1000), default="")

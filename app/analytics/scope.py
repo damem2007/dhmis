@@ -2,7 +2,11 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 
-from app.identity.service import ROLE_DEFINITIONS, ROLE_PERMISSIONS
+from app.identity.service import (
+    ROLE_DEFINITIONS,
+    ROLE_PERMISSIONS,
+    TENANT_SUPER_ADMIN_ROLE_ID,
+)
 
 # Internal helper for profile.
 def _profile(definition: dict) -> str:
@@ -47,9 +51,20 @@ class AnalyticsScope:
 
 # Retrieve resolve scope for the current request or workflow.
 def resolve_scope(actor, location_id: str | None = None, provider_id: str | None = None):
+    if actor.role_id == TENANT_SUPER_ADMIN_ROLE_ID:
+        # Tenant Super Admin is the protected tenant-wide setup role.  Its
+        # analytics scope is not inferred from the informational display name
+        # or from a materialized compatibility grant row.
+        return AnalyticsScope(
+            "organization-executive",
+            (),
+            provider_id,
+            True,
+            True,
+        )
     profile = ROLE_PROFILE.get(actor.role)
     if profile is None:
-        raise HTTPException(403, "Dashboard role is not configured")
+        raise HTTPException(403, "Dashboard access scope is not configured")
     assigned = tuple(actor.location_ids)
     location_restricted = actor.settings.visibility == "location" or profile in {
         "clinic-admin",

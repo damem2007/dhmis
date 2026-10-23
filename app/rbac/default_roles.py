@@ -135,6 +135,12 @@ async def seed_default_tenant_roles(db, actor_id: str = "rbac-bootstrap") -> dic
                 continue
             if not permission.reviewed or permission.retired:
                 continue
+            # Registry entries can be assignable without being part of the
+            # bootstrap grant set. This preserves least privilege for newly
+            # introduced clinical capabilities while keeping them visible in
+            # role management for explicit assignment.
+            if not permission.default_grant:
+                continue
             if (
                 _permission_module(permission) not in definition["modules"]
                 and permission.key not in explicit_permissions

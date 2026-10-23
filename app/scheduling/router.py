@@ -1,28 +1,65 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 
 from app.core.audit import audit
 from app.core.repository import required, serialize
+from app.identity.models import StaffUser
 from app.identity.service import db_session, permit
 from app.scheduling.models import Appointment
 from app.scheduling.schemas import Booking, Cancellation, NoShow, SeriesBooking
 from app.scheduling.service import book, book_series, cancel_booking
+from app.scheduling.presentation import present_appointment
 
 router = APIRouter(prefix="/appointments", tags=["Scheduling"])
 
 
 # Handle appointments for this module.
 @router.get("")
-async def appointments(db=Depends(db_session), actor=Depends(permit("scheduling"))):
-    rows = (await db.scalars(select(Appointment).order_by(Appointment.starts_at).limit(300))).all()
+async def appointments(
+    patient_id: str = Query("", max_length=36),
+    db=Depends(db_session),
+    actor=Depends(permit("scheduling")),
+):
+    from app.clinical.models import Encounter
+
+    query = select(Appointment).order_by(Appointment.starts_at)
+    if patient_id:
+        query = query.where(Appointment.patient_id == patient_id)
+    provider = await db.get(StaffUser, actor.user_id)
+    if provider and provider.is_provider:
+        query = query.where(Appointment.provider_id == actor.user_id)
+    rows = (await db.scalars(query.limit(300))).all()
+    # Reconcile legacy rows where the encounter was created but the
+    # appointment lifecycle update was interrupted. This keeps the schedule,
+    # portal, and encounter workspace on one state machine after a refresh.
+    if rows:
+        encounter_rows = (
+            await db.execute(
+                select(Encounter.appointment_id, Encounter.status).where(
+                    Encounter.appointment_id.in_([row.id for row in rows])
+                )
+            )
+        ).all()
+        encounter_status = {appointment_id: status for appointment_id, status in encounter_rows}
+        changed = False
+        for row in rows:
+            status = encounter_status.get(row.id)
+            if status == "open" and row.status == "confirmed":
+                row.status = "checked-in"
+                changed = True
+            elif status == "completed" and row.status != "completed":
+                row.status = "completed"
+                changed = True
+        if changed:
+            await db.flush()
     audit(db, actor.user_id, "read", "appointments", count=len(rows))
-    return [serialize(row) for row in rows]
+    return [present_appointment(row) for row in rows]
 
 
 # Handle create for this module.
 @router.post("", status_code=201)
 async def create(body: Booking, db=Depends(db_session), actor=Depends(permit("scheduling"))):
-    return serialize(await book(db, actor, body))
+    return present_appointment(await book(db, actor, body))
 
 
 # Create or issue create series while applying existing validation and authorization.
@@ -30,7 +67,7 @@ async def create(body: Booking, db=Depends(db_session), actor=Depends(permit("sc
 async def create_series(
     body: SeriesBooking, db=Depends(db_session), actor=Depends(permit("scheduling"))
 ):
-    return [serialize(row) for row in await book_series(db, actor, body)]
+    return [present_appointment(row) for row in await book_series(db, actor, body)]
 
 
 # Handle reschedule for this module.
@@ -38,7 +75,7 @@ async def create_series(
 async def reschedule(
     identifier: str, body: Booking, db=Depends(db_session), actor=Depends(permit("scheduling"))
 ):
-    return serialize(await book(db, actor, body, identifier))
+    return present_appointment(await book(db, actor, body, identifier))
 
 
 # Handle cancel for this module.
@@ -46,7 +83,7 @@ async def reschedule(
 async def cancel(
     identifier: str, body: Cancellation, db=Depends(db_session), actor=Depends(permit("scheduling"))
 ):
-    return serialize(await cancel_booking(db, actor, identifier, body.reason))
+    return present_appointment(await cancel_booking(db, actor, identifier, body.reason))
 
 
 # Handle no show for this module.
@@ -60,7 +97,7 @@ async def no_show(
 
     row = await required(db, Appointment, identifier, lock=True)
     if row.status == "no-show":
-        return serialize(row)
+        return present_appointment(row)
     if row.status != "confirmed":
         raise HTTPException(409, "Appointment cannot be marked no-show in its current state")
     if row.starts_at > datetime.now(timezone.utc):
@@ -71,7 +108,7 @@ async def no_show(
     row.updated_by = actor.user_id
     audit(db, actor.user_id, "no-show", "appointments", row.id, patient_id=row.patient_id)
     await db.flush()
-    return serialize(row)
+    return present_appointment(row)
 
 
 # Validate or enforce check in before the operation continues.
@@ -83,6 +120,14 @@ async def check_in(identifier: str, db=Depends(db_session), actor=Depends(permit
     row = await required(db, Appointment, identifier, lock=True)
     existing = await db.scalar(select(Encounter).where(Encounter.appointment_id == identifier))
     if existing:
+        # Older check-ins could create the encounter before updating the
+        # appointment row. Reconcile that state so the schedule and portal
+        # expose the same lifecycle state and the encounter is usable.
+        expected_status = "completed" if existing.status == "completed" else "checked-in"
+        if row.status != expected_status:
+            row.status = expected_status
+            row.updated_by = actor.user_id
+            await db.flush()
         return serialize(existing)
     if row.status != "confirmed":
         raise HTTPException(409, "Only confirmed appointments can be checked in")

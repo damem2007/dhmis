@@ -4,7 +4,7 @@
   "platform_roles": {
     "platform-super-admin": {
       "name": "Platform Super Admin",
-      "modules": ["platform_ops", "organizations", "regions", "routing", "integrations", "commercial", "access", "support", "audit"]
+      "modules": ["platform_ops", "organizations", "regions", "routing", "integrations", "commercial", "access", "support", "audit", "security"]
     }
   },
   "tenant_roles": [

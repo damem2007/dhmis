@@ -80,7 +80,7 @@ def upgrade():
             ("*", "payment_gateway", "sandbox"),
             ("*", "signature_provider", "sandbox"),
             ("*", "messaging_provider", "sandbox"),
-            ("*", "email_provider", "sandbox"),
+            ("*", "email_provider", "mailjet"),
             ("*", "sms_provider", "sandbox"),
             ("*", "accounting_exporter", "sandbox"),
             ("CA", "claims_network", "Sandbox1_CDAnet"),

@@ -5,11 +5,12 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 
 from app.core.audit import audit
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, page_count
 from app.core.repository import add, required
+from app.core.secure_fields import email_lookup
 from app.identity.security import digest
 from app.identity.service import db_session, permit
 from app.notifications.models import OutboxMessage
@@ -53,15 +54,6 @@ async def patient_invites(
         raise HTTPException(422, "Invalid invitation pagination")
     now = int(time.time())
     query = select(PatientInvite, Patient).join(Patient, Patient.id == PatientInvite.patient_id)
-    if search:
-        term = f"%{search.strip()}%"
-        query = query.where(
-            or_(
-                PatientInvite.email.ilike(term),
-                Patient.first_name.ilike(term),
-                Patient.last_name.ilike(term),
-            )
-        )
     if status == "accepted":
         query = query.where(PatientInvite.used.is_(True))
     elif status == "expired":
@@ -70,14 +62,19 @@ async def patient_invites(
         query = query.where(PatientInvite.used.is_(False), PatientInvite.expires > now)
     elif status not in (None, ""):
         raise HTTPException(422, "Unknown invitation status")
-    total = await db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
-    rows = (
-        await db.execute(
-            query.order_by(PatientInvite.created_at.desc(), PatientInvite.id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-    ).all()
+    rows = (await db.execute(query)).all()
+    term = search.strip().casefold()
+    if term:
+        rows = [
+            (invitation, patient)
+            for invitation, patient in rows
+            if term in invitation.email.casefold()
+            or term in patient.first_name.casefold()
+            or term in patient.last_name.casefold()
+        ]
+    rows.sort(key=lambda item: (item[0].created_at, item[0].id), reverse=True)
+    total = len(rows)
+    rows = rows[(page - 1) * page_size : page * page_size]
     audit(db, actor.user_id, "portal.invites.read", "patients", page=page, page_size=page_size)
     return {
         "page": page,
@@ -120,6 +117,7 @@ async def resend_patient_invite(
         {
             "patient_id": invitation.patient_id,
             "email": invitation.email,
+            "email_lookup": email_lookup(invitation.email),
             "token_hash": digest(raw),
             "expires": int(time.time()) + 86400,
         },

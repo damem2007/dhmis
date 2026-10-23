@@ -12,6 +12,7 @@ from app.core.repository import serialize
 from app.identity.models import StaffUser
 from app.identity.service import current_actor, db_session, permit, role_names_with_module
 from app.organizations.entitlements import resolve_entitlements
+from app.organizations.jurisdiction import jurisdiction
 from app.organizations.models import Location
 
 router = APIRouter(prefix="/organization", tags=["Organization"])
@@ -42,7 +43,7 @@ async def reference(db=Depends(db_session), actor=Depends(current_actor)):
         "region": actor.organization.region,
         "locations": [serialize(x) for x in locations],
         "providers": [{"id": x.id, "name": x.name} for x in providers],
-        "currency": "CAD",
+        "currency": jurisdiction(actor.organization.region).currency,
     }
 
 

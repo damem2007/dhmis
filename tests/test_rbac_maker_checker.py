@@ -224,6 +224,19 @@ async def test_rejection_withdrawal_expiry_and_conflict_states(client, tenants):
     )
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
+    rejected_notifications = await client.get(
+        "/v1/rbac/notifications", headers=tenant["headers"]
+    )
+    assert rejected_notifications.status_code == 200, rejected_notifications.text
+    rejection_notice = next(
+        item
+        for item in rejected_notifications.json()["items"]
+        if item["request_id"] == rejected_id and item["kind"] == "decision"
+    )
+    assert rejection_notice["status"] == "rejected"
+    assert "Policy conflict remains" in rejection_notice["detail"]
+    assert "new request" in rejection_notice["detail"]
+    assert "resubmitted automatically" in rejection_notice["detail"]
 
     _, withdrawn_id = await new_request("Withdrawn refund role")
     withdrawn = await client.post(
@@ -301,6 +314,7 @@ async def test_runtime_action_is_approved_before_it_is_applied(client, tenants):
         assert created and request.status == "pending"
         assert request.governing_rule_id
         assert "tenant-super-admin" in request.approval_context["eligible_role_ids"]
+        assert request.approval_context["approval_permission"] == "billing.payment.approve"
         duplicate, duplicate_created = await create_runtime_action_request(
             db,
             permission_key="billing.payment.refund",

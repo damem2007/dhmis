@@ -1,17 +1,24 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, or_, select
 
 from app.core.audit import audit
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, page_count
 from app.core.repository import add, required, serialize
+from app.core.secure_fields import email_lookup
 from app.identity.service import db_session, permit
 from app.organizations.models import Location
 from app.patient_identity.invitations import issue_patient_invite
+from app.patients.access import (
+    needs_assigned_patient_filter,
+    needs_location_patient_filter,
+    patient_read_decision,
+    visible_location_ids,
+)
 from app.patients.models import GuardianLink, Patient
 from app.patients.schemas import PatientCreate
 from app.rbac.dependencies import permit_tenant
@@ -23,8 +30,36 @@ from app.rbac.workflow import (
     create_runtime_action_request,
     request_payload,
 )
+from app.scheduling.models import Appointment
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
+
+
+async def ensure_patient_access(db, actor, patient_id: str):
+    """Enforce the patient read scope selected by the role grant.
+
+    Provider status is deliberately not consulted here. A dentist with an
+    organization-scoped patient grant can see every patient; Assigned scope
+    is the explicit permission choice that limits the caseload.
+    """
+
+    decision = await patient_read_decision(db, actor)
+    if decision is not None and not decision.allowed:
+        raise HTTPException(403, {"message": "Permission denied", "required_permissions": ["patients.patient_profile.read"]})
+    if needs_location_patient_filter(decision, actor):
+        row = await db.get(Patient, patient_id)
+        if row is None or row.location_id not in visible_location_ids(actor):
+            raise HTTPException(403, "Patient is outside the staff member's assigned clinics")
+    if decision is not None and needs_assigned_patient_filter(decision):
+        assigned = await db.scalar(
+            select(Appointment.id).where(
+                Appointment.patient_id == patient_id,
+                Appointment.provider_id == actor.user_id,
+                Appointment.status != "cancelled",
+            )
+        )
+        if not assigned:
+            raise HTTPException(403, "Patient is not assigned to this provider")
 
 
 # Handle patients for this module.
@@ -41,51 +76,67 @@ async def patients(
     actor=Depends(permit("patients")),
 ):
     conditions = []
+    # Visibility is determined by the role's canonical patient-profile grant.
+    # Organization scope is intentionally unfiltered, including for dentists;
+    # Assigned scope is the explicit opt-in caseload restriction.
+    patient_decision = await patient_read_decision(db, actor)
+    if patient_decision is not None and not patient_decision.allowed:
+        raise HTTPException(403, {"message": "Permission denied", "required_permissions": ["patients.patient_profile.read"]})
+    if needs_assigned_patient_filter(patient_decision):
+        conditions.append(
+            Patient.id.in_(
+                select(Appointment.patient_id).where(
+                    Appointment.provider_id == actor.user_id,
+                    Appointment.status != "cancelled",
+                )
+            )
+        )
+    elif needs_location_patient_filter(patient_decision, actor):
+        location_ids = visible_location_ids(actor)
+        if location_ids:
+            conditions.append(Patient.location_id.in_(location_ids))
+        else:
+            conditions.append(False)
     if status == "active":
         conditions.append(Patient.archived_at.is_(None))
     elif status == "archived":
         conditions.append(Patient.archived_at.is_not(None))
-    if q:
-        needle = f"%{q}%"
-        conditions.append(
-            or_(
-                Patient.first_name.ilike(needle),
-                Patient.last_name.ilike(needle),
-                Patient.email.ilike(needle),
-                Patient.phone.ilike(needle),
-            )
-        )
     if location_id:
         conditions.append(Patient.location_id == location_id)
     if age_from is not None and age_to is not None and age_from > age_to:
         raise HTTPException(422, "Age from must be less than or equal to age to")
     today = date.today()
-    if age_from is not None:
-        conditions.append(Patient.birth_date <= today.replace(year=today.year - age_from))
-    if age_to is not None:
-        youngest_birth_date = today.replace(year=today.year - (age_to + 1)) + timedelta(days=1)
-        conditions.append(Patient.birth_date >= youngest_birth_date)
-    base_query = select(Patient).where(*conditions).order_by(
-        Patient.last_name, Patient.first_name, Patient.id
-    )
+    # Encrypted fields cannot be filtered or sorted in SQL. Fetch the
+    # operationally visible candidates, decrypt them in the application, then
+    # apply the same search, age, ordering, and pagination semantics.
+    base_query = select(Patient).where(*conditions).order_by(Patient.id)
+    candidates = (await db.scalars(base_query)).all()
+    needle = q.strip().casefold()
+
+    # Handle encrypted patient filtering in application memory.
+    def matches(row):
+        if needle and needle not in " ".join(
+            (row.first_name, row.last_name, row.email, row.phone)
+        ).casefold():
+            return False
+        age = today.year - row.birth_date.year - ((today.month, today.day) < (row.birth_date.month, row.birth_date.day))
+        return (age_from is None or age >= age_from) and (age_to is None or age <= age_to)
+
+    rows = sorted((row for row in candidates if matches(row)), key=lambda row: (row.last_name.casefold(), row.first_name.casefold(), row.id))
     # Existing callers that do not request pagination continue to receive the
     # original list response, capped at 200 rows. New list views request both
     # parameters and receive an API-driven page with an authoritative total.
     if page is None and page_size is None:
         # Legacy array callers remain bounded for compatibility; paginated callers use
         # the API contract below and can request any supported page size.
-        rows = (await db.scalars(base_query.limit(MAX_PAGE_SIZE))).all()
+        rows = rows[:MAX_PAGE_SIZE]
         audit(db, actor.user_id, "read", "patients", count=len(rows))
         return [serialize(row) for row in rows]
 
     current_page = page or 1
     current_page_size = page_size or DEFAULT_PAGE_SIZE
-    total = await db.scalar(select(func.count()).select_from(Patient).where(*conditions))
-    rows = (
-        await db.scalars(
-            base_query.offset((current_page - 1) * current_page_size).limit(current_page_size)
-        )
-    ).all()
+    total = len(rows)
+    rows = rows[(current_page - 1) * current_page_size : current_page * current_page_size]
     total_pages = page_count(total or 0, current_page_size)
     audit(
         db,
@@ -110,7 +161,9 @@ async def patients(
 @router.post("", status_code=201)
 async def create(body: PatientCreate, db=Depends(db_session), actor=Depends(permit("patients"))):
     await required(db, Location, body.location_id)
-    row = await add(db, Patient, body.model_dump(exclude={"send_portal_invitation"}), actor.user_id)
+    values = body.model_dump(exclude={"send_portal_invitation"})
+    values["email_lookup"] = email_lookup(values.get("email"))
+    row = await add(db, Patient, values, actor.user_id)
     invitation = await issue_patient_invite(db, row, body.email, actor) if body.email and body.send_portal_invitation else None
     audit(db, actor.user_id, "create", "patients", row.id)
     result = serialize(row)
@@ -126,10 +179,13 @@ async def update(
     identifier: str, body: PatientCreate, db=Depends(db_session), actor=Depends(permit("patients"))
 ):
     row = await required(db, Patient, identifier, lock=True)
+    await ensure_patient_access(db, actor, row.id)
     if row.archived_at is not None:
         raise HTTPException(409, "Archived patient profiles are read-only")
     await required(db, Location, body.location_id)
-    for key, value in body.model_dump(exclude={"send_portal_invitation"}).items():
+    values = body.model_dump(exclude={"send_portal_invitation"})
+    values["email_lookup"] = email_lookup(values.get("email"))
+    for key, value in values.items():
         setattr(row, key, value)
     row.updated_by = actor.user_id
     audit(db, actor.user_id, "update", "patients", row.id)
@@ -154,6 +210,7 @@ async def _archive_patient(
 ):
     permission_key = "patients.patient_profile.restore" if restore else "patients.patient_profile.archive"
     row = await required(db, Patient, identifier, lock=True)
+    await ensure_patient_access(db, actor, row.id)
     if restore and row.archived_at is None:
         raise HTTPException(409, "Patient profile is not archived")
     if not restore and row.archived_at is not None:
@@ -169,7 +226,7 @@ async def _archive_patient(
     payload = {"patient_id": row.id, "restore": restore, "reason": body.reason.strip()}
     decision = await decide_tenant(db, actor.user_id, permission_key, selected_location_id=row.location_id)
     if not decision.allowed or decision.needs_step_up:
-        raise HTTPException(403, "Permission denied")
+        raise HTTPException(403, {"message": "Permission denied", "required_permissions": [permission_key]})
     approval = None
     if decision.needs_approval:
         if body.approval_request_id:
@@ -275,6 +332,7 @@ async def guardian(body: GuardianInput, db=Depends(db_session), actor=Depends(pe
 @router.get("/{identifier}/family")
 async def family(identifier: str, db=Depends(db_session), actor=Depends(permit("patients"))):
     await required(db, Patient, identifier)
+    await ensure_patient_access(db, actor, identifier)
     rows = (
         await db.scalars(
             select(GuardianLink).where(
@@ -292,5 +350,6 @@ async def detail(identifier: str, db=Depends(db_session), actor=Depends(permit("
     """Return one patient record for the record view."""
 
     row = await required(db, Patient, identifier)
+    await ensure_patient_access(db, actor, row.id)
     audit(db, actor.user_id, "read-detail", "patients", identifier)
     return serialize(row)

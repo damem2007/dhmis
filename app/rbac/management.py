@@ -82,9 +82,6 @@ async def role_payload(db, role, grant_model, assignment_model):
     user_count_query = select(func.count(func.distinct(assignment_model.user_id))).where(
         assignment_model.role_id == role.id
     )
-    # Tenant Super Admin supersedes legacy/default role assignments. Older
-    # tenants may still contain both rows after the RBAC migration, but the
-    # protected role must remain the sole role count for that user.
     if getattr(role, "domain", None) == "tenant" and role.id != "tenant-super-admin":
         super_admin_users = select(TenantRoleAssignment.user_id).where(
             TenantRoleAssignment.role_id == "tenant-super-admin"

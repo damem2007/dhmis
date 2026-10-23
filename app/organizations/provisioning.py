@@ -3,12 +3,16 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 
 from app.core.config import settings
 from app.core.database import checked_schema, control_session, engine, engine_for, tenant_session
 from app.organizations.configuration import backfill_legacy_configuration
-from app.organizations.models import Organization, PlatformCommercialAccount
+from app.organizations.models import (
+    Organization,
+    PlatformCommercialAccount,
+    PlatformSubscription,
+)
 from app.organizations.tenant_resolution import normalize_slug
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,21 +34,22 @@ async def migrate_schema(schema, database_alias="primary"):
         await connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
         await connection.run_sync(lambda sync: apply_migrations(sync, schema))
     if schema == "dhmis_control":
-        from app.rbac.bootstrap import seed_platform_super_admin
-        from app.rbac.registry import synchronize_permission_registry
-        from app.regions.service import ensure_region_registry
+        from app.organizations.platform_seed import seed_platform_configuration
 
         async with control_session() as db:
-            await synchronize_permission_registry(db)
-            await seed_platform_super_admin(db)
-            await ensure_region_registry(db)
+            await seed_platform_configuration(db)
     else:
         from app.billing.defaults import ensure_default_services
+        from app.clinical.defaults import ensure_catalogue_options, ensure_default_treatments
         from app.rbac.bootstrap import seed_tenant_super_admin
 
         async with tenant_session(schema, database_alias) as db:
             await ensure_default_services(db)
-            await seed_tenant_super_admin(db)
+            await ensure_catalogue_options(db)
+            await ensure_default_treatments(db)
+            # The role catalogue is approved setup configuration. This does
+            # not create staff accounts or assign demo users.
+            await seed_tenant_super_admin(db, include_default_roles=True)
 
 
 # Handle provision for this module.
@@ -57,6 +62,7 @@ async def provision(name, organization_id=None, slug=None, region="CA", database
         await lock.execute(
             text("SELECT pg_advisory_lock(hashtextextended(:key,0))"), {"key": "provision:" + identifier}
         )
+        created_here = False
         try:
             async with control_session() as db:
                 from app.regions.service import enabled_region
@@ -64,6 +70,7 @@ async def provision(name, organization_id=None, slug=None, region="CA", database
                 await enabled_region(db, region)
                 org = await db.get(Organization, identifier)
                 if org is None:
+                    created_here = True
                     base_slug = normalize_slug(slug or name)
                     if await db.scalar(
                         select(Organization).where(Organization.slug == base_slug)
@@ -82,7 +89,7 @@ async def provision(name, organization_id=None, slug=None, region="CA", database
                 elif org.status == "active":
                     return org
             try:
-                async with engine.begin() as db:
+                async with engine_for(database_alias).begin() as db:
                     await db.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
                 async with control_session() as db:
                     org = await db.get(Organization, identifier)
@@ -109,18 +116,57 @@ async def provision(name, organization_id=None, slug=None, region="CA", database
                         )
                 await backfill_legacy_configuration(org)
                 # Activation is separate so onboarding can atomically create the location and invite first.
+                org._provision_created = created_here
                 return org
             except Exception as error:
-                async with control_session() as db:
-                    org = await db.get(Organization, identifier)
-                    org.status = "failed"
-                    org.last_error = type(error).__name__
+                if created_here:
+                    try:
+                        await rollback_provisioned_organization(
+                            schema,
+                            identifier,
+                            database_alias,
+                        )
+                    except Exception:
+                        # Preserve a durable failure marker if infrastructure
+                        # cleanup itself cannot complete.
+                        async with control_session() as db:
+                            failed_org = await db.get(Organization, identifier)
+                            if failed_org is not None:
+                                failed_org.status = "failed"
+                                failed_org.last_error = type(error).__name__
+                else:
+                    async with control_session() as db:
+                        existing_org = await db.get(Organization, identifier)
+                        if existing_org is not None:
+                            existing_org.status = "failed"
+                            existing_org.last_error = type(error).__name__
                 raise
         finally:
             await lock.execute(
                 text("SELECT pg_advisory_unlock(hashtextextended(:key,0))"),
                 {"key": "provision:" + identifier},
             )
+
+
+# Remove all state created by a failed new-tenant provisioning attempt.
+async def rollback_provisioned_organization(schema: str, organization_id: str, database_alias: str = "primary"):
+    """Drop the tenant schema and its control-plane rows as one compensation step."""
+
+    checked_schema(schema)
+    async with engine_for(database_alias).begin() as connection:
+        await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+    async with control_session() as db:
+        await db.execute(
+            delete(PlatformSubscription).where(
+                PlatformSubscription.organization_id == organization_id
+            )
+        )
+        await db.execute(
+            delete(PlatformCommercialAccount).where(
+                PlatformCommercialAccount.organization_id == organization_id
+            )
+        )
+        await db.execute(delete(Organization).where(Organization.id == organization_id))
 
 
 # Handle activate for this module.
@@ -133,8 +179,15 @@ async def activate(identifier):
     return org
 
 
-# Handle migrate all for this module.
 async def migrate_all():
+    """Migrate control, template, and every already-onboarded tenant schema.
+
+    This function never calls ``provision`` and therefore never creates an
+    organization or inserts user, patient, or operational demo data. It runs
+    the schema migrations and approved configuration backfills for every
+    tenant that has reached onboarding, reporting failures per tenant so a
+    release can be blocked without hiding which schema needs attention.
+    """
     await migrate_schema("dhmis_control")
     # A session-level run lock spans all tenant transactions, even a tenant failure.
     async with engine.connect() as lock:
@@ -142,16 +195,30 @@ async def migrate_all():
         try:
             await migrate_schema("dhmis_template")
             async with control_session() as db:
-                orgs = (await db.scalars(select(Organization))).all()
+                organizations = (
+                    await db.scalars(
+                        select(Organization)
+                        .where(
+                            Organization.status.in_(
+                                ("schema_created", "migrated", "active")
+                            )
+                        )
+                        .order_by(Organization.created_at, Organization.id)
+                    )
+                ).all()
             results = []
-            for org in orgs:
+            for organization in organizations:
                 try:
-                    await migrate_schema(org.schema_name, org.database_alias)
-                    await backfill_legacy_configuration(org)
-                    results.append({"organization_id": org.id, "migrated": True})
+                    await migrate_schema(organization.schema_name, organization.database_alias)
+                    await backfill_legacy_configuration(organization)
+                    results.append({"organization_id": organization.id, "migrated": True})
                 except Exception as error:
                     results.append(
-                        {"organization_id": org.id, "migrated": False, "error_type": type(error).__name__}
+                        {
+                            "organization_id": organization.id,
+                            "migrated": False,
+                            "error_type": type(error).__name__,
+                        }
                     )
             return results
         finally:

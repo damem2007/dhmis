@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Book an appointment</title></head>
+<body><div id="dhmis-widget"></div><script>
+  var params = new URLSearchParams(location.search);
+  var script = document.createElement('script');
+  script.src = params.get('widget') || './appointments.js';
+  script.dataset.organizationId = params.get('organization_id') || '';
+  script.dataset.mode = 'div';
+  script.dataset.apiBase = params.get('api') || '';
+  script.dataset.parentOrigin = params.get('parent_origin') || '';
+  document.body.appendChild(script);
+</script></body></html>

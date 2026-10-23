@@ -16,6 +16,14 @@ from app.platform_identity.service import (
 from app.rbac.runtime import decide_platform, decide_tenant
 
 
+def _permission_denial_detail(message: str, permission_keys: tuple[str, ...] | list[str]) -> dict:
+    """Return a structured denial so clients can tell the user what to request."""
+    return {
+        "message": message,
+        "required_permissions": list(dict.fromkeys(permission_keys)),
+    }
+
+
 # Internal helper for mfa age minutes.
 def _mfa_age_minutes(authenticated_at: int) -> int | None:
     if not authenticated_at:
@@ -63,8 +71,65 @@ def permit_tenant(permission_key: str, *, workflow_handles_approval: bool = Fals
                 else:
                     denial = "Permission denied"
         if denial:
-            raise HTTPException(403, denial)
+            raise HTTPException(403, _permission_denial_detail(denial, (permission_key,)))
         return actor
+
+    return guard
+
+
+def permit_any_tenant(*permission_keys: str):
+    """Allow a route when the actor has any one of the supplied grants.
+
+    This is for composite pages whose tabs are independently governed. The
+    dependency records the exact grants that passed on the request so the
+    handler can filter each response collection without broadening access.
+    """
+    if not permission_keys:
+        raise ValueError("permit_any_tenant requires at least one permission")
+
+    async def guard(
+        request: Request,
+        actor: Actor = Depends(current_actor),
+    ):
+        async with organization_session(actor.organization) as db:
+            db.info["actor"] = actor
+            decisions = {
+                key: await decide_tenant(
+                    db,
+                    actor.user_id,
+                    key,
+                    selected_location_id=actor.selected_location_id,
+                    mfa_age_minutes=_mfa_age_minutes(actor.mfa_authenticated_at),
+                    current_ip=request.client.host if request.client else None,
+                )
+                for key in permission_keys
+            }
+            allowed = {
+                key
+                for key, decision in decisions.items()
+                if decision.allowed and not decision.needs_step_up and not decision.needs_approval
+            }
+            request.state.rbac_allowed_permissions = allowed
+            if allowed:
+                return actor
+
+            audit(
+                db,
+                actor.user_id,
+                "access.denied",
+                " or ".join(permission_keys),
+                organization_id=actor.organization.id,
+                trace=[line for decision in decisions.values() for line in decision.trace],
+                needs_step_up=any(decision.needs_step_up for decision in decisions.values()),
+                needs_approval=any(decision.needs_approval for decision in decisions.values()),
+            )
+            if any(decision.needs_step_up for decision in decisions.values()):
+                denial = "Recent step-up MFA is required"
+            elif any(decision.needs_approval for decision in decisions.values()):
+                denial = "Maker-checker approval is required"
+            else:
+                denial = "Permission denied"
+        raise HTTPException(403, _permission_denial_detail(denial, permission_keys))
 
     return guard
 
@@ -108,7 +173,7 @@ def permit_platform(permission_key: str, *, workflow_handles_approval: bool = Fa
                 else:
                     denial = "Permission denied"
         if denial:
-            raise HTTPException(403, denial)
+            raise HTTPException(403, _permission_denial_detail(denial, (permission_key,)))
         return actor
 
     return guard

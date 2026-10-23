@@ -3,7 +3,7 @@ import asyncio
 import json
 
 from app.core.config import settings
-from app.core.database import dispose_engines
+from app.core.database import control_session, dispose_engines
 from app.organizations.provisioning import (
     activate,
     migrate_all,
@@ -11,23 +11,25 @@ from app.organizations.provisioning import (
     provision,
     reset_development_schemas,
 )
-from app.organizations.seed import DEMO_ORG_ID, seed
+from app.organizations.models import Organization
+from app.organizations.seed import DEMO_ORG_ID, seed_demo_data, seed_system_configuration
 
 
 # Run the main entry point for this module.
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", choices=["bootstrap", "migrate", "reset-development", "dispatch"]
+        "command",
+        choices=["bootstrap", "migrate", "reset-development", "demo-seed", "dispatch"],
     )
     args = parser.parse_args()
     try:
         if args.command == "bootstrap":
             if settings().environment != "development":
-                raise RuntimeError("Demo bootstrap requires development mode")
+                raise RuntimeError("Development bootstrap requires development mode")
             await migrate_schema("dhmis_control")
             org = await provision("DHMIS Demonstration", DEMO_ORG_ID)
-            result = await seed(org)
+            result = await seed_system_configuration(org)
             await activate(org.id)
             print(json.dumps(result))
         elif args.command == "migrate":
@@ -40,9 +42,18 @@ async def main():
             await migrate_schema("dhmis_control")
             await migrate_schema("dhmis_template")
             org = await provision("DHMIS Demonstration", DEMO_ORG_ID, slug="dhmis-demo")
-            result = await seed(org)
+            result = await seed_system_configuration(org)
             await activate(org.id)
             print(json.dumps({"dropped_schemas": len(dropped), "bootstrap": result}))
+        elif args.command == "demo-seed":
+            if settings().environment != "development":
+                raise RuntimeError("Demo data seeding is disabled outside development")
+            async with control_session() as db:
+                org = await db.get(Organization, DEMO_ORG_ID)
+            if org is None:
+                raise RuntimeError("The canonical demonstration organization is not provisioned")
+            result = await seed_demo_data(org)
+            print(json.dumps(result))
         else:
             from app.notifications.worker import tick
             from app.platform_identity.delivery import platform_tick
@@ -57,8 +68,8 @@ async def main():
             )
     except Exception as error:
         # Operational output must never leak credentials or patient data.
-       # print(json.dumps({"success": False, "error_type": type(error).__name__, "verbose-error": type(error)}))
-        print(json.dumps({"success": False, "error_type": type(error).__name__}))
+        print(json.dumps({"success": False, "error_type": type(error).__name__, "verbose-error": type(error)}))
+        # print(json.dumps({"success": False, "error_type": type(error).__name__}))
         raise SystemExit(1) from None
     finally:
         await dispose_engines()

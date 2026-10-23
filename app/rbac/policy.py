@@ -220,6 +220,7 @@ class PermissionDefinition:
     restricted: bool
     requires: tuple[str, ...]
     valid_scopes: tuple[Scope, ...]
+    default_grant: bool = True
     reviewed: bool = True
     retired: bool = False
 
@@ -1641,6 +1642,7 @@ def can_decide(
     user_role_keys: set[str],
     policy: ApprovalPolicy,
     allow_maker: bool = False,
+    checker_permission_allowed: bool | None = None,
     now: datetime | None = None,
 ) -> tuple[bool, str | None]:
     now = now or datetime.now(UTC)
@@ -1666,16 +1668,12 @@ def can_decide(
     if request.expires_at <= now:
         return False, "request has expired"
 
-    eligible_roles = set(
-        eligible_approver_roles(request.domain, policy)
-    )
+    if checker_permission_allowed is None:
+        eligible_roles = set(eligible_approver_roles(request.domain, policy))
+        checker_permission_allowed = bool(eligible_roles.intersection(user_role_keys))
 
-    if not eligible_roles.intersection(user_role_keys) and not (allow_maker and user_domain is Domain.PLATFORM):
-        return (
-            False,
-            "user is not an eligible approver for this "
-            "authorization domain",
-        )
+    if not checker_permission_allowed and not (allow_maker and user_domain is Domain.PLATFORM):
+        return False, "user lacks the required approval permission"
 
     return True, None
 
@@ -1689,6 +1687,7 @@ def apply_decision(
     user_role_keys: set[str],
     policy: ApprovalPolicy,
     allow_maker: bool = False,
+    checker_permission_allowed: bool | None = None,
     now: datetime | None = None,
 ) -> ChangeRequest:
     allowed, reason = can_decide(
@@ -1698,6 +1697,7 @@ def apply_decision(
         user_role_keys=user_role_keys,
         policy=policy,
         allow_maker=allow_maker,
+        checker_permission_allowed=checker_permission_allowed,
         now=now,
     )
 

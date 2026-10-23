@@ -1,6 +1,11 @@
-"""Idempotent development seed: all demo data is persisted in PostgreSQL."""
+"""Explicit setup and development-demo data flows.
 
-from datetime import date, datetime, time, timedelta
+System configuration is safe to run during bootstrap and deployment setup.
+Demo records are intentionally isolated behind ``seed_demo_data`` so normal
+bootstrap never creates users, patients, or operational records.
+"""
+
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
@@ -19,14 +24,48 @@ from app.integrations.configuration import attach_effective_adapters
 from app.organizations.configuration import tenant_settings
 from app.organizations.models import Location
 from app.patients.models import Patient
+from app.rbac.models import TenantRole
 from app.scheduling.schemas import Booking
 from app.scheduling.service import book
 
 DEMO_ORG_ID = "d1100000-0000-4000-8000-000000000001"
 
 
-# Handle seed for this module.
+async def seed_system_configuration(org):
+    """Apply tenant-owned system configuration and protected RBAC setup."""
+
+    await attach_effective_adapters(org)
+    from app.clinical.defaults import ensure_catalogue_options, ensure_default_treatments
+
+    async with organization_session(org) as db:
+        await tenant_settings(db)
+        await ensure_catalogue_options(db)
+        await ensure_default_treatments(db)
+        from app.rbac.bootstrap import seed_tenant_super_admin
+
+        # Setup creates the protected Tenant Super Admin plus the approved
+        # editable role catalogue. It never creates staff accounts or demo
+        # operational records.
+        await seed_tenant_super_admin(
+            db,
+            "system-setup",
+            include_default_roles=True,
+        )
+    return {"organization_id": org.id, "configured": True}
+
+
 async def seed(org):
+    """Backward-compatible alias for the configuration-only setup flow."""
+
+    return await seed_system_configuration(org)
+
+
+# Handle demo data for this module.
+async def seed_demo_data(org):
+    if org.id != DEMO_ORG_ID:
+        raise ValueError(
+            "The development seed is restricted to the canonical demonstration organization"
+        )
     if org.slug.startswith("tenant-"):
         from app.core.database import control_session
 
@@ -39,8 +78,23 @@ async def seed(org):
         runtime_settings = await tenant_settings(db)
         await db.execute(text("SELECT pg_advisory_xact_lock(726430120)"))
         if await db.scalar(select(StaffUser).where(StaffUser.email == "admin@dhmis.test")):
+            # Keep the development bootstrap account attached to the protected
+            # tenant role when the tenant was created before canonical RBAC.
+            from app.rbac.bootstrap import seed_tenant_super_admin
+
+            await seed_tenant_super_admin(
+                db,
+                "seed-superadmin-reconciliation",
+                include_default_roles=True,
+            )
             return {"organization_id": org.id, "email": "admin@dhmis.test", "seeded": False}
         location = await add(db, Location, {"name": "DHMIS Demo Clinic · Vancouver"}, "seed")
+        admin_role_id = await db.scalar(
+            select(TenantRole.id).where(
+                TenantRole.name == "admin",
+                TenantRole.status == "published",
+            )
+        )
         user = await add(
             db,
             StaffUser,
@@ -48,7 +102,9 @@ async def seed(org):
                 "name": "Dr. Alex Chen",
                 "email": "admin@dhmis.test",
                 "role": "admin",
+                "role_id": admin_role_id,
                 "password_hash": hash_password(settings().demo_password.get_secret_value()),
+                "password_changed_at": datetime.now(UTC),
             },
             "seed",
         )
@@ -59,7 +115,14 @@ async def seed(org):
                 "name": "Dr. Jordan Lee",
                 "email": "dentist@dhmis.test",
                 "role": "dentist",
+                "role_id": await db.scalar(
+                    select(TenantRole.id).where(
+                        TenantRole.name == "dentist",
+                        TenantRole.status == "published",
+                    )
+                ),
                 "password_hash": hash_password(settings().demo_password.get_secret_value()),
+                "password_changed_at": datetime.now(UTC),
                 "location_ids": [location.id],
             },
             "seed",
@@ -87,6 +150,17 @@ async def seed(org):
             ]
         )
         await db.flush()
+        # The provisioning pass creates the protected role before the demo
+        # account exists. Run the idempotent assignment pass again after the
+        # legacy bootstrap rows are present so the demo admin is immediately
+        # effective as Tenant Super Admin.
+        from app.rbac.bootstrap import seed_tenant_super_admin
+
+        await seed_tenant_super_admin(
+            db,
+            "seed-superadmin-assignment",
+            include_default_roles=True,
+        )
         actor = Actor(
             user.id,
             org,

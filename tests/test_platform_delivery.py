@@ -72,6 +72,7 @@ async def test_platform_invitation_and_password_reset_delivery(client):
             match = re.search(r"[?&]reset=([^\s]+)", reset_message.payload["body"])
             assert match
             reset_token = match.group(1)
+            assert reset_message.payload["target_url"] == f"/admin/?reset={reset_token}"
 
         response = await client.post(
             "/v1/platform/auth/password-reset/complete",

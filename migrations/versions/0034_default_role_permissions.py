@@ -60,6 +60,11 @@ def upgrade():
                 continue
             if not permission.reviewed or permission.retired:
                 continue
+            # Registry entries marked as assignable are intentionally not
+            # bootstrap grants. They remain available to role administrators
+            # without silently changing existing roles during an upgrade.
+            if not permission.default_grant:
+                continue
             module = permission.resource_key.split(".", 1)[0]
             if module not in definition.get("modules", ()) and permission.key not in explicit:
                 continue

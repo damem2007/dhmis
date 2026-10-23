@@ -1,7 +1,7 @@
 """Shared pagination bounds for API-driven list screens."""
 
-DEFAULT_PAGE_SIZE = 100
-PAGE_SIZE_OPTIONS = (100, 500, 1000)
+DEFAULT_PAGE_SIZE = 25
+PAGE_SIZE_OPTIONS = (25, 50, 100, 500, 1000)
 MAX_PAGE_SIZE = max(PAGE_SIZE_OPTIONS)
 
 

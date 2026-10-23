@@ -1,4 +1,6 @@
-from pydantic import AwareDatetime, BaseModel, Field, model_validator
+from datetime import datetime
+
+from pydantic import BaseModel, Field, model_validator
 
 
 # Defines the booking model, contract, or value object.
@@ -7,8 +9,10 @@ class Booking(BaseModel):
     location_id: str
     provider_id: str
     chair: str = Field(min_length=1, max_length=40)
-    starts_at: AwareDatetime
-    ends_at: AwareDatetime
+    # Naïve values represent wall-clock time at the selected clinic; public
+    # availability values may still include an explicit offset.
+    starts_at: datetime
+    ends_at: datetime
     procedure: str = Field(min_length=1, max_length=180)
 
     # Handle valid duration for this module.

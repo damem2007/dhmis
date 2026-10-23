@@ -38,6 +38,7 @@ async def tenants():
                     "name": f"Test Admin {label}",
                     "email": "admin@example.test",
                     "role": "admin",
+                    "is_provider": True,
                     "password_hash": hash_password("Verification-password-2026!"),
                     "mfa_enabled": True,
                     "mfa_secret": vault().seal(secret),

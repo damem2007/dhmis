@@ -1,12 +1,13 @@
 import time
-from datetime import UTC, datetime
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import AwareDatetime, BaseModel, Field, model_validator
 from sqlalchemy import delete, func, or_, select
 
 from app.core.audit import audit
+from app.core.config import settings
 from app.core.database import control_session, organization_session
 from app.identity.models import StaffUser
 from app.identity.service import Actor, current_actor
@@ -214,6 +215,22 @@ def _page(values: list[dict], page: int, size: int):
     }
 
 
+# Module pages use the backend's configured size rather than the legacy
+# permission-row page-size contract (10, 25, or 50).
+def _module_page(values: list[dict], page: int, size: int):
+    if size < 1 or size > 50:
+        raise HTTPException(422, "Module page size must be between 1 and 50")
+    total = len(values)
+    start = (page - 1) * size
+    return {
+        "items": values[start : start + size],
+        "page": page,
+        "size": size,
+        "total": total,
+        "pages": (total + size - 1) // size,
+    }
+
+
 # Internal helper for permission row.
 def _permission_row(permission):
     return {
@@ -258,6 +275,69 @@ def _catalogue(
         rows.append(_permission_row(permission))
     rows.sort(key=lambda item: (item["module_id"], item["resource_key"], item["action"]))
     return _page(rows, page, size)
+
+
+# Return a stable read-only revision for clients that cache permission modules.
+# The registry digest changes when the approved catalogue changes, without
+# requiring a database migration or a write to the permission tables.
+def _catalogue_metadata(domain: Domain):
+    approved = load_approved_registry()
+    permissions = approved_permissions(domain, approved)
+    return {
+        "domain": domain.value,
+        "revision": f"{approved.version}:{approved.source_digest}",
+        "total": len(permissions),
+        "modules": len({permission.module_id for permission in permissions.values()}),
+        "check_interval_seconds": settings().rbac_catalogue_check_interval_seconds,
+        "modules_per_page": settings().rbac_catalogue_modules_per_page,
+    }
+
+
+# Return complete resources grouped into backend-configured module pages. A
+# module is never split across pages, so the frontend can edit its loaded
+# draft without fetching the same permissions again for each control.
+def _module_catalogue(
+    domain: Domain,
+    page: int,
+    search: str | None,
+    reviewed: bool | None,
+):
+    needle = (search or "").strip().lower()
+    grouped = {}
+    permissions = list(approved_permissions(domain).values())
+    matching_modules = set()
+    if needle:
+        for permission in permissions:
+            if reviewed is not None and permission.reviewed is not reviewed:
+                continue
+            haystack = " ".join(
+                (permission.key, permission.module_name, permission.resource_name, permission.action)
+            ).lower()
+            if needle in haystack:
+                matching_modules.add(permission.module_id or permission.module_name)
+    for permission in permissions:
+        if reviewed is not None and permission.reviewed is not reviewed:
+            continue
+        module_key = permission.module_id or permission.module_name
+        if needle and module_key not in matching_modules:
+            continue
+        module = grouped.setdefault(
+            module_key,
+            {"key": module_key, "name": permission.module_name, "resources": {}},
+        )
+        resource = module["resources"].setdefault(
+            permission.resource_key,
+            {"key": permission.resource_key, "name": permission.resource_name, "permissions": []},
+        )
+        resource["permissions"].append(_permission_row(permission))
+    modules = []
+    for module in sorted(grouped.values(), key=lambda item: (item["key"], item["name"])):
+        resources = [
+            resource
+            for resource in sorted(module["resources"].values(), key=lambda item: (item["key"], item["name"]))
+        ]
+        modules.append({"key": module["key"], "name": module["name"], "resources": resources})
+    return _module_page(modules, page, settings().rbac_catalogue_modules_per_page)
 
 
 # Internal helper for decision row.
@@ -354,6 +434,31 @@ async def tenant_permissions(
     return _catalogue(Domain.TENANT, page, size, module, search, reviewed)
 
 
+# Handle tenant permission catalogue metadata for cache validation.
+@router.get("/rbac/permissions/meta")
+async def tenant_permission_metadata(
+    actor: Actor = Depends(permit_tenant("access.permission_catalogue.read")),
+):
+    async with organization_session(actor.organization) as db:
+        db.info["actor"] = actor
+        audit(db, actor.user_id, "rbac.permissions.meta.read", "permission_catalogue")
+    return _catalogue_metadata(Domain.TENANT)
+
+
+# Handle complete tenant modules using the backend-configured module page size.
+@router.get("/rbac/permissions/modules")
+async def tenant_permission_modules(
+    page: int = Query(default=1, ge=1),
+    search: str | None = None,
+    reviewed: bool | None = None,
+    actor: Actor = Depends(permit_tenant("access.permission_catalogue.read")),
+):
+    async with organization_session(actor.organization) as db:
+        db.info["actor"] = actor
+        audit(db, actor.user_id, "rbac.permission_modules.read", "permission_catalogue")
+    return _module_catalogue(Domain.TENANT, page, search, reviewed)
+
+
 # Handle platform permissions for this module.
 @router.get("/platform/rbac/permissions")
 async def platform_permissions(
@@ -375,6 +480,34 @@ async def platform_permissions(
             details={"domain": domain},
         )
     return _catalogue(Domain.PLATFORM, page, size, module, search, reviewed)
+
+
+# Handle platform permission catalogue metadata for cache validation.
+@router.get("/platform/rbac/permissions/meta")
+async def platform_permission_metadata(
+    actor: PlatformActor = Depends(permit_platform("access.permission_catalogue.read")),
+):
+    async with control_session() as db:
+        platform_audit(
+            db,
+            actor.user_id,
+            "platform-rbac.permissions.meta.read",
+            details={"domain": Domain.PLATFORM.value},
+        )
+    return _catalogue_metadata(Domain.PLATFORM)
+
+
+# Handle complete platform modules using the backend-configured module page size.
+@router.get("/platform/rbac/permissions/modules")
+async def platform_permission_modules(
+    page: int = Query(default=1, ge=1),
+    search: str | None = None,
+    reviewed: bool | None = None,
+    actor: PlatformActor = Depends(permit_platform("access.permission_catalogue.read")),
+):
+    async with control_session() as db:
+        platform_audit(db, actor.user_id, "platform-rbac.permission_modules.read")
+    return _module_catalogue(Domain.PLATFORM, page, search, reviewed)
 
 
 # Handle tenant policy for this module.
@@ -425,6 +558,7 @@ async def change_tenant_policy(
             domain=Domain.TENANT,
             request_model=TenantChangeRequest,
             policy_model=TenantApprovalPolicy,
+            approval_permission="access.tenant_role_permission_mapping.approve",
         )
         audit(
             db,
@@ -455,6 +589,7 @@ async def change_platform_policy(
             domain=Domain.PLATFORM,
             request_model=PlatformChangeRequest,
             policy_model=PlatformApprovalPolicy,
+            approval_permission="access.platform_role_permission_mapping.approve",
         )
         platform_audit(
             db,
@@ -487,6 +622,7 @@ async def change_tenant_four_eyes_rules(
             domain=Domain.TENANT,
             request_model=TenantChangeRequest,
             policy_model=TenantApprovalPolicy,
+            approval_permission="access.tenant_role_permission_mapping.approve",
         )
         audit(
             db,
@@ -520,6 +656,7 @@ async def change_platform_four_eyes_rules(
             domain=Domain.PLATFORM,
             request_model=PlatformChangeRequest,
             policy_model=PlatformApprovalPolicy,
+            approval_permission="access.platform_role_permission_mapping.approve",
         )
         platform_audit(
             db,
@@ -931,6 +1068,77 @@ async def _request_list(
     }
 
 
+# Resolve the checker permission, including requests created before it was
+# persisted on the request row.
+def _request_approval_permission(row, domain: Domain) -> str | None:
+    approval_permission = (row.approval_context or {}).get("approval_permission")
+    if approval_permission:
+        return str(approval_permission)
+    # Runtime requests created before approval_context stored the checker key
+    # still carry the governed permission. Derive its resource-specific
+    # approval action instead of falling back to a generic approval grant.
+    if row.kind == "runtime-action" and row.runtime_permission_key:
+        resource_key, _action = str(row.runtime_permission_key).rsplit(".", 1)
+        return f"{resource_key}.approve"
+    if row.kind in {"role", "role-policy", "role-publication", "approval-policy", "four-eyes-rules"}:
+        return (
+            "access.tenant_role_permission_mapping.approve"
+            if domain is Domain.TENANT
+            else "access.platform_role_permission_mapping.approve"
+        )
+    return None
+
+
+# Resolve approval eligibility from the backend's resource-specific checker permission.
+async def _attach_request_eligibility(
+    db,
+    result: dict,
+    request_model,
+    decision_model,
+    actor_id: str,
+    domain: Domain,
+    selected_location_id: str | None = None,
+    allow_maker: bool = False,
+):
+    role_keys = await _approver_role_keys(db, actor_id, domain)
+    policy_model = TenantApprovalPolicy if domain is Domain.TENANT else PlatformApprovalPolicy
+    policy = await load_approval_policy(db, policy_model)
+    for item in result["items"]:
+        row = await db.get(request_model, item["id"])
+        allowed = False
+        reason = "request is not pending"
+        if row and row.status == "pending":
+            decisions = (
+                await db.scalars(select(decision_model).where(decision_model.request_id == row.id))
+            ).all()
+            if any(decision.user_id == actor_id for decision in decisions):
+                reason = "user has already decided"
+            elif row.maker_id == actor_id and not allow_maker:
+                reason = "maker cannot approve own request"
+            else:
+                approval_permission = _request_approval_permission(row, domain)
+                if approval_permission:
+                    if domain is Domain.TENANT:
+                        decision = await decide_tenant(
+                            db,
+                            actor_id,
+                            approval_permission,
+                            selected_location_id=((row.approval_context or {}).get("scope") or {}).get("location_id") or selected_location_id,
+                        )
+                    else:
+                        decision = await decide_platform(db, actor_id, approval_permission)
+                    allowed = decision.allowed and not decision.needs_approval and not decision.needs_step_up
+                    reason = "eligible checker" if allowed else "user lacks the required approval permission"
+                else:
+                    allowed = bool(set(role_keys).intersection(
+                        policy.tenant_eligible_roles if domain is Domain.TENANT else policy.platform_eligible_roles
+                    ))
+                    reason = "eligible checker" if allowed else "user lacks the required approval permission"
+        item["can_decide"] = bool(allowed or (allow_maker and row and row.maker_id == actor_id))
+        item["decision_reason"] = None if item["can_decide"] else reason
+    return result
+
+
 def _friendly_approval_label(row, registry) -> str:
     """Return a human-readable subject for an approval notification.
 
@@ -953,6 +1161,35 @@ def _friendly_approval_label(row, registry) -> str:
     }.get(row.kind, "Access policy")
 
 
+def _rejection_notification_detail(row_decisions: list) -> str:
+    """Describe a rejection to the maker without reopening the request.
+
+    The request's ``reason`` explains why the maker submitted the change; the
+    decision comment explains why the checker rejected it. Keep those separate
+    so the maker receives the actionable feedback from the approval decision.
+    """
+    def decision_time(item):
+        value = item.decided_at
+        if value is None:
+            return datetime.min.replace(tzinfo=UTC)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    rejection = max(
+        (item for item in row_decisions if item.decision == "reject"),
+        key=decision_time,
+        default=None,
+    )
+    comment = " ".join((rejection.comment or "").split()) if rejection else ""
+    reason = comment or "No rejection reason was supplied."
+    return (
+        f"Rejected by the checker. Reason: {reason} "
+        "Create a new request with the requested changes; this request will not "
+        "be resubmitted automatically."
+    )
+
+
 # Internal helper for approval notifications.
 async def _approval_notifications(
     db,
@@ -963,6 +1200,8 @@ async def _approval_notifications(
     actor_id: str,
     role_keys: set[str],
     eligible_roles: tuple[str, ...],
+    domain: Domain,
+    selected_location_id: str | None = None,
 ):
     await expire_requests(db, request_model)
     rows = (
@@ -986,13 +1225,26 @@ async def _approval_notifications(
             )
         ).all()
     )
-    is_checker = bool(role_keys.intersection(eligible_roles))
     registry = load_approved_registry()
     items = []
     for row in rows:
         label = _friendly_approval_label(row, registry)
         row_decisions = decisions_by_request.get(row.id, [])
         already_decided = any(item.user_id == actor_id for item in row_decisions)
+        approval_permission = _request_approval_permission(row, domain)
+        if approval_permission:
+            if domain is Domain.TENANT:
+                checker_decision = await decide_tenant(
+                    db,
+                    actor_id,
+                    approval_permission,
+                    selected_location_id=((row.approval_context or {}).get("scope") or {}).get("location_id") or selected_location_id,
+                )
+            else:
+                checker_decision = await decide_platform(db, actor_id, approval_permission)
+            is_checker = checker_decision.allowed and not checker_decision.needs_approval and not checker_decision.needs_step_up
+        else:
+            is_checker = bool(role_keys.intersection(eligible_roles))
         if row.status == "pending" and row.maker_id != actor_id and is_checker and not already_decided:
             items.append({
                 "request_id": row.id,
@@ -1020,14 +1272,19 @@ async def _approval_notifications(
         elif row.maker_id == actor_id and row.status in {
             "approved", "applied", "rejected", "expired", "conflicted"
         }:
+            detail = (
+                _rejection_notification_detail(row_decisions)
+                if row.status == "rejected"
+                else row.reason
+            )
             items.append({
                 "request_id": row.id,
                 "kind": "decision",
                 "title": f"{label} was {row.status}",
-                "detail": row.reason,
+                "detail": detail,
                 "status": row.status,
                 "created_at": row.updated_at,
-                "cta_label": "View outcome",
+                "cta_label": "View rejection" if row.status == "rejected" else "View outcome",
                 "counted": row.id not in seen,
                 "seen": row.id in seen,
             })
@@ -1289,6 +1546,13 @@ async def create_tenant_role_change(
             assignment_model=TenantRoleAssignment,
             grant_model=TenantRoleGrant,
             version_model=TenantPolicyVersion,
+            # The protected tenant super-admin is the bootstrap authority. It
+            # can seed the first checker roles without locking the tenant out.
+            # Other role changes are governed by the approval policy and its
+            # active four-eyes rules.
+            bypass_approval=actor.role_id == "tenant-super-admin",
+            approval_permission="access.tenant_role_permission_mapping.approve",
+            approval_scope={"organization_id": str(actor.organization.id)},
         )
         audit(
             db,
@@ -1402,6 +1666,12 @@ async def tenant_requests(
             mine=mine,
             actor_id=actor.user_id,
         )
+        result = await _attach_request_eligibility(
+            db, result, TenantChangeRequest, TenantChangeDecision,
+            actor.user_id, Domain.TENANT,
+            selected_location_id=actor.selected_location_id,
+            allow_maker=actor.role_id == "tenant-super-admin",
+        )
         audit(db, actor.user_id, "rbac.requests.read", "change_request")
         return result
 
@@ -1422,6 +1692,8 @@ async def tenant_approval_notifications(
             actor_id=actor.user_id,
             role_keys=await _approver_role_keys(db, actor.user_id, Domain.TENANT),
             eligible_roles=policy.tenant_eligible_roles,
+            domain=Domain.TENANT,
+            selected_location_id=actor.selected_location_id,
         )
         audit(db, actor.user_id, "rbac.notifications.read", "change_request")
         return result
@@ -1467,10 +1739,18 @@ async def tenant_request_decision(
         if action == "withdraw":
             await withdraw_request(db, row, actor.user_id)
         else:
-            permission = f"reports.pending_approval_item.{action}"
-            decision = await decide_tenant(db, actor.user_id, permission)
-            if not decision.allowed:
-                raise HTTPException(403, "Permission denied")
+            approval_permission = _request_approval_permission(row, Domain.TENANT)
+            permission = approval_permission or f"reports.pending_approval_item.{action}"
+            scope = (row.approval_context or {}).get("scope") or {}
+            decision = await decide_tenant(
+                db,
+                actor.user_id,
+                permission,
+                selected_location_id=scope.get("location_id") or actor.selected_location_id,
+            )
+            checker_allowed = decision.allowed and not decision.needs_approval and not decision.needs_step_up
+            if not checker_allowed:
+                raise HTTPException(403, {"message": "Permission denied", "required_permissions": [permission]})
             await decide_request(
                 db,
                 request_row=row,
@@ -1486,6 +1766,8 @@ async def tenant_request_decision(
                 grant_model=TenantRoleGrant,
                 version_model=TenantPolicyVersion,
                 rule_model=TenantFourEyesRule,
+                allow_maker=actor.role_id == "tenant-super-admin",
+                checker_permission_allowed=checker_allowed if approval_permission else None,
             )
         audit(
             db,
@@ -1689,6 +1971,7 @@ async def create_platform_role_change(
             assignment_model=PlatformRoleAssignment,
             grant_model=PlatformRoleGrant,
             version_model=PlatformPolicyVersion,
+            approval_permission="access.platform_role_permission_mapping.approve",
         )
         platform_audit(
             db,
@@ -1805,6 +2088,15 @@ async def platform_requests(
             mine=mine,
             actor_id=actor.user_id,
         )
+        result = await _attach_request_eligibility(
+            db, result, PlatformChangeRequest, PlatformChangeDecision,
+            actor.user_id, Domain.PLATFORM,
+            allow_maker=(
+                actor.user_id == "bootstrap"
+                or actor.is_bootstrap_operator
+                or actor.role.strip().lower().replace(" ", "-") == "platform-super-admin"
+            ),
+        )
         platform_audit(db, actor.user_id, "platform-rbac.requests.read")
         return result
 
@@ -1824,6 +2116,7 @@ async def platform_approval_notifications(
             actor_id=actor.user_id,
             role_keys=await _approver_role_keys(db, actor.user_id, Domain.PLATFORM),
             eligible_roles=policy.platform_eligible_roles,
+            domain=Domain.PLATFORM,
         )
         platform_audit(db, actor.user_id, "platform-rbac.notifications.read")
         return result
@@ -1875,6 +2168,17 @@ async def platform_request_decision(
                     PlatformRoleAssignment.role_id == "platform-super-admin",
                 )
             )
+            approval_permission = _request_approval_permission(row, Domain.PLATFORM)
+            permission = approval_permission or f"reports.pending_approval_item.{action}"
+            decision = await decide_platform(db, actor.user_id, permission)
+            checker_allowed = decision.allowed and not decision.needs_approval and not decision.needs_step_up
+            if not checker_allowed and not (
+                actor.user_id == "bootstrap"
+                or actor.is_bootstrap_operator
+                or super_admin_assignment is not None
+                or actor.role.strip().lower().replace(" ", "-") == "platform-super-admin"
+            ):
+                raise HTTPException(403, {"message": "Permission denied", "required_permissions": [permission]})
             await decide_request(
                 db,
                 request_row=row,
@@ -1896,6 +2200,7 @@ async def platform_request_decision(
                     or super_admin_assignment is not None
                     or actor.role.strip().lower().replace(" ", "-") == "platform-super-admin"
                 ),
+                checker_permission_allowed=checker_allowed if approval_permission else None,
             )
         platform_audit(
             db,

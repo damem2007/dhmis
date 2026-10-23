@@ -97,11 +97,20 @@ def provider_options(*, include_live: bool | None = None):
 # Handle resolve for this module.
 def resolve(organization, capability):
     name = selected_provider(organization, capability)
+    mode = getattr(organization, "_effective_adapter_modes", {}).get(capability, "auto")
+    registration = REGISTRY.get(capability, {}).get(name)
+    if registration is None:
+        raise IntegrationFailure("Selected provider has no installed adapter")
+    if mode == "live" and registration.sandbox:
+        raise IntegrationFailure("Selected provider is sandbox-only")
+    if mode == "sandbox" and not registration.sandbox:
+        raise IntegrationFailure("Selected provider has no sandbox adapter")
     return resolve_registered(
         capability,
         name,
         organization_id=organization.id,
         region=organization.region,
+        enforce_live=mode != "sandbox",
     )
 
 
@@ -178,5 +187,5 @@ register_provider("geocoding_provider", "tomtom", TomTomGeocodingProvider)
 register_provider("geocoding_provider", "photon", PhotonGeocodingProvider, sandbox=True)
 register_provider("geocoding_provider", "overpass-addresses", OverpassAddressProvider, sandbox=True)
 register_provider("geocoding_provider", "postal-aware", PostalAwareGeocodingProvider, sandbox=True)
-register_provider("map_provider", "openstreetmap", OpenStreetMapProvider, sandbox=True)
+register_provider("map_provider", "openstreetmap", OpenStreetMapProvider)
 register_provider("map_provider", "tomtom", TomTomMapProvider)

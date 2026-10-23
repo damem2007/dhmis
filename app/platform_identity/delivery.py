@@ -96,17 +96,24 @@ async def enqueue_platform_email(
         "subject": subject,
         "body": body,
         "reference_id": reference_id,
+        # The same signed, one-time link sent by email is available from the
+        # authenticated platform notification center. This keeps recovery
+        # notifications actionable instead of rendering a dead CTA.
+        # Keep the in-app target relative to the current platform-admin host.
+        # Email links still use the configured absolute platform URL above,
+        # while the bell must not send operators to a stale development IP.
+        "target_url": f"/admin/?{action}={quote(raw_token, safe='')}",
     }
     row = PlatformOutboxMessage(
         kind=kind,
         payload=payload,
-        status="sent",
+        status="pending",
         idempotency_key=f"{kind}:{reference_id}",
         created_by=actor_id,
         updated_by=actor_id,
     )
-    # Keep accepted deliveries in the control-plane outbox so callers can
-    # query the returned delivery id and the notification worker can audit it.
+    # Keep the delivery record in the control-plane outbox for audit and
+    # retry, while calling the selected adapter immediately below.
     db.add(row)
     adapters = await platform_adapter_names(db)
     if "email_provider" not in adapters and settings().environment in {"development", "sandbox", "test"}:
@@ -124,6 +131,7 @@ async def enqueue_platform_email(
         ))
         if result.get("status") not in DELIVERED_STATES:
             raise IntegrationFailure("Provider did not accept platform email delivery")
+        row.status = result["status"]
         row.result = result
         platform_audit(db, actor_id, f"{kind}.delivery.accepted", details={"reference_id": reference_id, "sandbox": bool(result.get("sandbox"))})
         return row

@@ -3,7 +3,7 @@ from app.analytics.models import AnalyticsActionItem
 from app.billing.models import Invoice, LedgerEntry, Service
 from app.care_coordination.models import LabCase, Referral
 from app.claims.models import Claim
-from app.clinical.models import ChartEntry, PerioExam, RecordAddendum
+from app.clinical.models import ChartEntry, ConditionTreatmentLink, PerioExam, QuickChartSet, Quote, RecordAddendum, TreatmentCatalogueItem, TreatmentCatalogueOption
 from app.cms.models import CmsMediaAsset, CmsPublicationPointer, CmsRevision
 from app.consents.models import Consent
 from app.core.audit import AuditEvent
@@ -75,7 +75,7 @@ from app.rbac.models import (
     TenantRoleGrant,
     TenantSoDRule,
 )
-from app.regions.models import PlatformRegion
+from app.regions.models import PlatformRegion, TenantCodeSetActivation
 from app.scheduling.models import Appointment
 from app.surgery.models import DaySurgeryAdmission
 
@@ -84,6 +84,7 @@ __all__ = [
     "AnalyticsActionItem",
     "AuditEvent",
     "ChartEntry",
+    "ConditionTreatmentLink",
     "RecordAddendum",
     "Claim",
     "CmsMediaAsset",
@@ -134,6 +135,8 @@ __all__ = [
     "TenantRoleGrant",
     "TenantSoDRule",
     "PlatformChangeNotificationReceipt",
+    "PlatformRegion",
+    "TenantCodeSetActivation",
     "TenantChangeNotificationReceipt",
     "DaySurgeryAdmission",
     "Document",
@@ -153,15 +156,17 @@ __all__ = [
     "PlatformSession",
     "PlatformSupportTicket",
     "PlatformUser",
-    "PlatformRegion",
     "AdapterCustomizationRequest",
     "PlatformAdapterDefault",
     "TenantAdapterOverride",
+    "TreatmentCatalogueItem",
+    "TreatmentCatalogueOption",
 ]
 
 from app.billing.models import FeeVersion, JournalLine, PaymentPlan
 from app.claims.models import InsurancePlan
 from app.clinical.models import Encounter, TreatmentPlan
+from app.code_library.models import CodeLibraryActivation, CodeLibraryVersion, ProcedureCode, TreatmentCodeMapping
 from app.identity.models import AuthChallenge, AuthRateLimit, StaffInvite, StaffSession
 from app.patients.models import GuardianLink
 
@@ -177,4 +182,8 @@ __all__ += [
     "PaymentPlan",
     "JournalLine",
     "InsurancePlan",
+    "CodeLibraryActivation",
+    "CodeLibraryVersion",
+    "ProcedureCode",
+    "TreatmentCodeMapping",
 ]

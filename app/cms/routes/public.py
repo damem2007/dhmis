@@ -18,12 +18,13 @@ from app.core.audit import audit
 from app.core.database import organization_session
 from app.core.rate_limit import get_fo_throttle_args
 from app.core.repository import add
+from app.core.secure_fields import email_lookup, normalized_email
 from app.identity.models import StaffUser
 from app.identity.router import throttle
 from app.identity.service import Actor, role_names_with_module
 from app.integrations.configuration import attach_effective_adapters
 from app.integrations.contracts import IntegrationFailure
-from app.integrations.registry import resolve_registered
+from app.integrations.registry import resolve
 from app.organizations.configuration import tenant_settings
 from app.organizations.models import Location
 from app.organizations.tenant_resolution import resolve_organization
@@ -60,13 +61,7 @@ async def storefront_data(
     map_provider_name = adapter_names.get("map_provider")
     if map_provider_name:
         try:
-            map_provider = resolve_registered(
-                "map_provider",
-                map_provider_name,
-                organization_id=organization.id,
-                region=organization.region,
-                enforce_live=False,
-            )
+            map_provider = resolve(organization, "map_provider")
         except IntegrationFailure:
             map_provider = None
     async with organization_session(organization) as db:
@@ -262,10 +257,10 @@ async def public_booking(organization_id: str, body: PublicBooking, request: Req
             adapter_names=adapter_names,
         )
         patient = await db.scalar(
-            select(Patient).where(
-                Patient.email == body.email.lower(), Patient.birth_date == body.birth_date
-            )
+            select(Patient).where(Patient.email_lookup == email_lookup(body.email))
         )
+        if patient is not None and (normalized_email(patient.email) != normalized_email(body.email) or patient.birth_date != body.birth_date):
+            patient = None
         if patient is None:
             patient = await add(
                 db,
@@ -275,6 +270,7 @@ async def public_booking(organization_id: str, body: PublicBooking, request: Req
                     "last_name": body.last_name,
                     "birth_date": body.birth_date,
                     "email": body.email.lower(),
+                    "email_lookup": email_lookup(body.email),
                     "phone": body.phone,
                     "location_id": body.location_id,
                 },

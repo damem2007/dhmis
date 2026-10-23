@@ -1,6 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.exc import IntegrityError
 
 from app.analytics.router import router as analytics
@@ -8,6 +10,7 @@ from app.billing.operations import router as financial_operations
 from app.billing.router import router as billing
 from app.care_coordination.router import router as care_coordination
 from app.claims.router import router as claims
+from app.code_library.router import router as code_library
 from app.clinical.router import router as clinical
 from app.cms.router import router as cms
 from app.consents.router import router as consents
@@ -35,16 +38,37 @@ from app.regions.router import router as regions
 from app.reporting.router import router as reporting
 from app.scheduling.router import router as scheduling
 from app.surgery.router import router as surgery
+from app.widgets.cors import AppointmentWidgetCORSMiddleware
+from app.widgets.router import router as appointment_widget
 
 app = FastAPI(
     title="DHMIS Core Platform",
     version="0.1.0",
     description="Development sandbox. No production clinical use.",
 )
+
+# The appointment widget is a standalone browser asset.  It is served by the
+# API origin so a tenant can copy one stable script URL into any website,
+# including a site that does not use tenant-web.
+@app.get("/widgets/appointments.js", include_in_schema=False)
+async def appointment_widget_script():
+    return FileResponse(
+        Path(__file__).resolve().parent / "widgets" / "assets" / "appointments.js",
+        media_type="application/javascript",
+    )
+
+@app.get("/widgets/appointments-frame.html", include_in_schema=False)
+async def appointment_widget_frame():
+    return FileResponse(
+        Path(__file__).resolve().parent / "widgets" / "assets" / "appointments-frame.html",
+        media_type="text/html",
+    )
+
+app.add_middleware(AppointmentWidgetCORSMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings().cors_origins,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=[
         "Authorization",
         "Content-Type",
@@ -64,6 +88,7 @@ for router in [
     clinical,
     billing,
     claims,
+    code_library,
     consents,
     dashboard,
     patient_identity,
@@ -80,6 +105,7 @@ for router in [
     reporting,
     rbac,
     regions,
+    appointment_widget,
 ]:
     app.include_router(router, prefix="/v1")
 app.include_router(financial_operations, prefix="/v1")

@@ -15,7 +15,6 @@ from app.rbac.policy import (
     ChangePatch,
     ChangeRequest,
     Domain,
-    FourEyesRule,
     FourEyesScope,
     Grant,
     GrantEffect,
@@ -25,8 +24,9 @@ from app.rbac.policy import (
     apply_decision,
     diff_grants,
     find_conflicts,
-    governing_rule_for,
     glob_to_regex,
+    governing_rule_for,
+    requires_approval,
     validate_grants,
 )
 
@@ -139,6 +139,12 @@ async def create_runtime_action_request(
         if permission.domain is Domain.TENANT
         else policy.platform_eligible_roles
     )
+    approval_permission = f"{permission.resource_key}.approve"
+    if approval_permission not in context.permissions:
+        raise HTTPException(
+            409,
+            f"No approval permission is defined for {permission.resource_key}; expected {approval_permission}",
+        )
     scope_context = {
         key: payload[key]
         for key in ("organization_id", "tenant_id", "location_id", "patient_id", "invoice_id")
@@ -161,6 +167,7 @@ async def create_runtime_action_request(
         approval_context={
             "governing_rule_name": rule.name,
             "eligible_role_ids": list(eligible_roles),
+            "approval_permission": approval_permission,
             "scope": scope_context,
         },
         created_by=maker_id,
@@ -214,6 +221,7 @@ async def create_governance_change_request(
     domain: Domain,
     request_model,
     policy_model,
+    approval_permission: str | None = None,
 ):
     if len(reason.strip()) < 8:
         raise HTTPException(422, "Change reason must be at least 8 characters")
@@ -244,6 +252,7 @@ async def create_governance_change_request(
         expires_at=datetime.now(UTC) + timedelta(hours=policy.expires_after_hours),
         created_by=maker_id,
         updated_by=maker_id,
+        approval_context={"approval_permission": approval_permission} if approval_permission else {},
     )
     db.add(row)
     await db.flush()
@@ -446,6 +455,9 @@ async def create_role_change_request(
     assignment_model,
     grant_model,
     version_model,
+    bypass_approval: bool = False,
+    approval_permission: str | None = None,
+    approval_scope: dict | None = None,
 ):
     if len(reason.strip()) < 8:
         raise HTTPException(422, "Change reason must be at least 8 characters")
@@ -496,12 +508,53 @@ async def create_role_change_request(
         patch.append({"role_id": role.id, "publish": True})
     if not patch:
         raise HTTPException(422, "No role changes were supplied")
+    request_kind = "role-publication" if publish else "role-policy"
+    pending_requests = (
+        await db.scalars(
+            select(request_model)
+            .where(
+                request_model.role_id == role.id,
+                request_model.maker_id == maker_id,
+                request_model.kind == request_kind,
+                request_model.status == RequestStatus.PENDING.value,
+            )
+            .order_by(request_model.created_at.desc())
+        )
+    ).all()
+    # A repeated save of the same draft is a retry, not a second approval
+    # request. Return the existing request so the UI can remain stable while
+    # the first request is reviewed.
+    for existing in pending_requests:
+        if existing.patch == patch:
+            if bypass_approval:
+                await apply_role_request(
+                    db,
+                    existing,
+                    role,
+                    grant_model,
+                    version_model,
+                    approver_ids=[maker_id],
+                )
+            return existing, {
+                "cleared_dependents": cleared,
+                "conflicts": conflicts,
+                "duplicate": True,
+                "bypassed_approval": bypass_approval,
+            }
     policy = await load_approval_policy(db, policy_model)
     changed_permissions = [
         context.permissions[change.key]
         for change in changes
-        if change.after is not None and change.key in context.permissions
+        if change.key in context.permissions
     ]
+    approval_required = requires_approval(
+        changed_permissions,
+        conflicts=len(conflicts),
+        touches_locked_role=False,
+        high_risk_assignment=False,
+        policy=policy,
+        rules=context.rules,
+    )
     risk = max((int(permission.risk) for permission in changed_permissions), default=1)
     affected_users = await db.scalar(
         select(func.count(func.distinct(assignment_model.user_id))).where(
@@ -510,24 +563,37 @@ async def create_role_change_request(
     )
     row = request_model(
         domain=role.domain,
-        kind="role-publication" if publish else "role-policy",
+        kind=request_kind,
         status=RequestStatus.PENDING.value,
         maker_id=maker_id,
         reason=reason.strip(),
         patch=patch,
         risk=risk,
         affected_users=affected_users or 0,
-        required_approvals=policy.approvers_needed,
+        required_approvals=(policy.approvers_needed if approval_required and not bypass_approval else 0),
         expires_at=datetime.now(UTC) + timedelta(hours=policy.expires_after_hours),
         break_glass=break_glass,
         role_id=role.id,
         role_version=role.version,
+        approval_context={
+            "approval_permission": approval_permission,
+            "scope": approval_scope or {},
+        } if approval_permission else {},
         created_by=maker_id,
         updated_by=maker_id,
     )
     db.add(row)
     await db.flush()
-    if break_glass:
+    if bypass_approval:
+        await apply_role_request(
+            db,
+            row,
+            role,
+            grant_model,
+            version_model,
+            approver_ids=[maker_id],
+        )
+    elif break_glass:
         if not policy.break_glass_enabled:
             raise HTTPException(409, "Break-glass is disabled")
         await apply_role_request(
@@ -539,7 +605,21 @@ async def create_role_change_request(
             approver_ids=[],
             preserve_pending=True,
         )
-    return row, {"cleared_dependents": cleared, "conflicts": conflicts}
+    elif not approval_required:
+        await apply_role_request(
+            db,
+            row,
+            role,
+            grant_model,
+            version_model,
+            approver_ids=[],
+        )
+    return row, {
+        "cleared_dependents": cleared,
+        "conflicts": conflicts,
+        "approval_required": approval_required,
+        "bypassed_approval": bypass_approval,
+    }
 
 
 # Handle apply role request for this module.
@@ -581,8 +661,18 @@ async def apply_role_request(
                 }
             )
             if before:
-                await db.delete(before)
-            if after:
+                if after:
+                    # Preserve the existing grant row as the live source of
+                    # truth. The policy version below records the before/after
+                    # audit entry; changing the row in place also avoids a
+                    # transient unique-key collision.
+                    before.effect = after["effect"]
+                    before.scope = after["scope"]
+                    before.conditions = after.get("conditions", {})
+                    before.updated_by = request_row.maker_id
+                else:
+                    await db.delete(before)
+            elif after:
                 db.add(
                     grant_model(
                         role_id=role.id,
@@ -639,6 +729,7 @@ async def decide_request(
     version_model,
     rule_model=None,
     allow_maker: bool = False,
+    checker_permission_allowed: bool | None = None,
 ):
     del request_model
     existing = (
@@ -661,6 +752,7 @@ async def decide_request(
             user_role_keys=role_keys,
             policy=policy,
             allow_maker=allow_maker,
+            checker_permission_allowed=checker_permission_allowed,
         )
     except (PermissionError, ValueError) as error:
         raise HTTPException(409, str(error)) from None

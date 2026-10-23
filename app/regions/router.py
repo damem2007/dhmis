@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.core.database import control_session
 from app.core.repository import serialize
 from app.platform_identity.service import PlatformActor, platform_audit, platform_or_bootstrap
+from app.organizations.models import Organization
 from app.rbac.dependencies import permit_platform_or_bootstrap
 from app.rbac.models import PlatformApprovalPolicy, PlatformChangeDecision, PlatformChangeRequest
 from app.rbac.runtime import decide_platform, platform_policy_context
@@ -16,7 +17,7 @@ from app.rbac.workflow import (
     create_runtime_action_request,
     request_payload,
 )
-from app.regions.models import PlatformRegion
+from app.regions.models import PlatformRegion, TenantCodeSetActivation
 from app.regions.service import ensure_region_registry
 
 router = APIRouter(prefix="/platform/regions", tags=["Platform regions"])
@@ -58,6 +59,41 @@ async def regions(
         return [serialize(row) for row in rows]
 
 
+@router.get("/activation-summary")
+async def activation_summary(
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap("regions.supported_region_registry.read")
+    ),
+):
+    """Return aggregate activation status without exposing tenant code content."""
+    async with control_session() as db:
+        await ensure_region_registry(db)
+        regions = (await db.scalars(select(PlatformRegion).order_by(PlatformRegion.code))).all()
+        code_set_by_region = {region.code: region.code_set_type for region in regions if region.code_set_type}
+        organizations = (await db.scalars(select(Organization))).all()
+        total_by_set: dict[str, int] = {}
+        for organization in organizations:
+            code_set = code_set_by_region.get(str(organization.region).upper())
+            if code_set:
+                total_by_set[code_set] = total_by_set.get(code_set, 0) + 1
+        active_rows = (await db.scalars(select(TenantCodeSetActivation).where(TenantCodeSetActivation.active.is_(True)))).all()
+        activated_by_set: dict[str, int] = {}
+        for activation in active_rows:
+            activated_by_set[activation.code_set_type] = activated_by_set.get(activation.code_set_type, 0) + 1
+        code_sets = set(total_by_set) | set(activated_by_set)
+        labels = {"CDA": "Canadian Dental Association", "CDT": "American Dental Association"}
+        return [
+            {
+                "code_set_type": code_set,
+                "label": labels.get(code_set, "Tenant procedure code set"),
+                "activated": activated_by_set.get(code_set, 0),
+                "pending": None,
+                "not_activated": total_by_set.get(code_set, 0) - activated_by_set.get(code_set, 0),
+            }
+            for code_set in sorted(code_sets)
+        ]
+
+
 # Handle region status for this module.
 @router.put("/{code}/status")
 async def region_status(
@@ -81,7 +117,7 @@ async def region_status(
             db, actor.user_id, permission_key
         )
         if decision is not None and (not decision.allowed or decision.needs_step_up):
-            raise HTTPException(403, "Permission denied")
+            raise HTTPException(403, {"message": "Permission denied", "required_permissions": [permission_key]})
         approval = None
         if decision is not None and decision.needs_approval:
             if body.approval_request_id:

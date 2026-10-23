@@ -1,6 +1,6 @@
 from sqlalchemy import select
 
-from app.identity.models import StaffLocationAssignment
+from app.identity.models import StaffLocationAssignment, StaffUser
 from app.identity.service import default_role_name
 from app.platform_identity.models import PlatformUser
 from app.rbac.models import (
@@ -14,6 +14,7 @@ from app.rbac.models import (
     TenantFourEyesRule,
     TenantRole,
     TenantRoleAssignment,
+    TenantRoleGrant,
     TenantSoDRule,
 )
 from app.rbac.registry import load_approved_registry
@@ -207,16 +208,135 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
     return role
 
 
+# Synchronize the protected tenant role with the approved tenant permission
+# registry. This is intentionally idempotent so policy reads can repair a
+# tenant that was provisioned before a new permission was added.
+async def ensure_tenant_super_admin_grants(
+    db,
+    actor_id: str = "rbac-superadmin-sync",
+    *,
+    role: TenantRole | None = None,
+) -> TenantRole | None:
+    sync_key = "tenant_super_admin_grants_synced"
+    if getattr(db, "info", {}).get(sync_key):
+        return role
+
+    role = role or await db.get(TenantRole, TENANT_SUPER_ADMIN_ROLE_ID)
+    if role is None:
+        return None
+
+    registry = load_approved_registry()
+    existing_grants = {
+        row.permission_key
+        for row in (
+            await db.scalars(
+                select(TenantRoleGrant).where(TenantRoleGrant.role_id == role.id)
+            )
+        ).all()
+    }
+    added = False
+    for permission in registry.permissions.values():
+        if (
+            permission.domain.value != "tenant"
+            or not permission.reviewed
+            or permission.retired
+            or permission.key in existing_grants
+        ):
+            continue
+        valid_scopes = {scope.value for scope in permission.valid_scopes}
+        if "Organization" in valid_scopes:
+            scope = "Organization"
+        elif "Location" in valid_scopes:
+            scope = "Location"
+        else:
+            continue
+        db.add(
+            TenantRoleGrant(
+                role_id=role.id,
+                permission_key=permission.key,
+                effect="allow",
+                scope=scope,
+                created_by=actor_id,
+                updated_by=actor_id,
+            )
+        )
+        existing_grants.add(permission.key)
+        added = True
+    if added:
+        await db.flush()
+    getattr(db, "info", {})[sync_key] = True
+    return role
+
+
+async def ensure_platform_super_admin_grants(
+    db,
+    actor_id: str = "rbac-superadmin-sync",
+    *,
+    role: PlatformRole | None = None,
+) -> PlatformRole | None:
+    """Keep the protected platform role aligned with approved permissions."""
+    sync_key = "platform_super_admin_grants_synced"
+    if getattr(db, "info", {}).get(sync_key):
+        return role
+
+    role = role or await db.get(PlatformRole, PLATFORM_SUPER_ADMIN_ROLE_ID)
+    if role is None:
+        return None
+
+    registry = load_approved_registry()
+    existing_grants = {
+        row.permission_key
+        for row in (
+            await db.scalars(
+                select(PlatformRoleGrant).where(
+                    PlatformRoleGrant.role_id == role.id
+                )
+            )
+        ).all()
+    }
+    added = False
+    for permission in registry.permissions.values():
+        if (
+            permission.domain.value != "platform"
+            or not permission.reviewed
+            or permission.retired
+            or permission.key in existing_grants
+        ):
+            continue
+        db.add(
+            PlatformRoleGrant(
+                role_id=role.id,
+                permission_key=permission.key,
+                effect="allow",
+                scope="Platform",
+                created_by=actor_id,
+                updated_by=actor_id,
+            )
+        )
+        existing_grants.add(permission.key)
+        added = True
+    if added:
+        await db.flush()
+    getattr(db, "info", {})[sync_key] = True
+    return role
+
+
 # Handle seed tenant super admin for this module.
 async def seed_tenant_super_admin(
     db,
     actor_id: str = "rbac-bootstrap",
     *,
     sync_legacy: bool = False,
+    assign_first_legacy_admin: bool = True,
+    include_default_roles: bool = True,
 ) -> TenantRole:
     from app.rbac.default_roles import seed_default_tenant_roles, sync_legacy_assignments
 
-    default_roles = await seed_default_tenant_roles(db, actor_id)
+    default_roles = (
+        await seed_default_tenant_roles(db, actor_id)
+        if include_default_roles
+        else {}
+    )
     await seed_rbac_governance(db, "tenant", actor_id)
     role = await db.get(TenantRole, TENANT_SUPER_ADMIN_ROLE_ID)
     if role is None:
@@ -232,16 +352,23 @@ async def seed_tenant_super_admin(
         )
         db.add(role)
         await db.flush()
-    legacy_admins = (
-        await db.scalars(
-            select(StaffLocationAssignment).where(
-                StaffLocationAssignment.active,
-                StaffLocationAssignment.scope == "organization",
-                StaffLocationAssignment.role == default_role_name(),
-            )
-            .order_by(StaffLocationAssignment.created_at, StaffLocationAssignment.id)
+    else:
+        # The protected setup role is canonical by identifier. Normalize its
+        # metadata on every bootstrap pass so a partially provisioned tenant
+        # cannot remain unpublished, unlocked, or attached to another domain.
+        role.domain = "tenant"
+        role.name = "Tenant Super Admin"
+        role.status = "published"
+        role.locked = True
+        role.description = (
+            "Locked tenant role with every active reviewed tenant permission."
         )
-    ).all()
+        role.updated_by = actor_id
+    # The protected setup role is intentionally broader than the editable
+    # default roles. Keep its canonical grants synchronized with every active
+    # reviewed tenant permission so onboarding administrators can configure a
+    # tenant immediately after accepting the invitation.
+    await ensure_tenant_super_admin_grants(db, actor_id, role=role)
     assigned = set(
         await db.scalars(
             select(TenantRoleAssignment.user_id).where(
@@ -250,17 +377,49 @@ async def seed_tenant_super_admin(
             )
         )
     )
-    if not assigned and legacy_admins:
-        assignment = legacy_admins[0]
+    legacy_admins = []
+    if assign_first_legacy_admin:
+        legacy_admins = (
+            await db.scalars(
+                select(StaffLocationAssignment).where(
+                    StaffLocationAssignment.active,
+                    StaffLocationAssignment.scope == "organization",
+                    StaffLocationAssignment.role == default_role_name(),
+                )
+                .order_by(StaffLocationAssignment.created_at, StaffLocationAssignment.id)
+            )
+        ).all()
+    bootstrap_user_id = legacy_admins[0].user_id if legacy_admins else None
+    if not assigned and bootstrap_user_id is None:
+        # Tenants reconciled to canonical RBAC may no longer have a matching
+        # legacy location row. Keep the same first organization-admin rule by
+        # falling back to the canonical assignment projection.
+        bootstrap_user_id = await db.scalar(
+            select(TenantRoleAssignment.user_id)
+            .join(TenantRole, TenantRole.id == TenantRoleAssignment.role_id)
+            .where(
+                TenantRoleAssignment.level == "Organization",
+                TenantRoleAssignment.location_id.is_(None),
+                TenantRole.status == "published",
+                TenantRole.name == default_role_name("organization"),
+            )
+            .order_by(TenantRoleAssignment.created_at, TenantRoleAssignment.id)
+            .limit(1)
+        )
+    if not assigned and bootstrap_user_id:
         db.add(
             TenantRoleAssignment(
-                user_id=assignment.user_id,
+                user_id=bootstrap_user_id,
                 role_id=role.id,
                 level="Organization",
                 created_by=actor_id,
                 updated_by=actor_id,
             )
         )
+        promoted_user = await db.get(StaffUser, bootstrap_user_id)
+        if promoted_user is not None:
+            promoted_user.role_id = role.id
+            promoted_user.role = role.name
     await db.flush()
     # Canonical role assignments are authoritative. Legacy assignment rows are
     # bridged only by an explicit caller (for example, invite acceptance for a

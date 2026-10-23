@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Integer, String
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,8 +13,14 @@ class PlatformUser(Record, Base):
     __table_args__ = {"schema": "dhmis_control"}
     email: Mapped[str] = mapped_column(String(254), unique=True)
     name: Mapped[str] = mapped_column(String(160))
-    role: Mapped[str] = mapped_column(String(30), default="platform_admin")
+    # Legacy compatibility marker; canonical access is the role assignment.
+    # Human-readable compatibility display; canonical authorization uses role_id.
+    role: Mapped[str] = mapped_column(String(160), default="platform_admin")
+    role_id: Mapped[str | None] = mapped_column(
+        ForeignKey("dhmis_control.platform_roles.id"), nullable=True, index=True
+    )
     password_hash: Mapped[str] = mapped_column(String(300))
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     mfa_secret: Mapped[str] = mapped_column(String(1000), default="")
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mfa_counter: Mapped[int] = mapped_column(BigInteger, default=-1)

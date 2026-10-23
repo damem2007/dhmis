@@ -1,12 +1,16 @@
+import hashlib
 import json
+import ipaddress
 import re
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote
-from uuid import UUID
+from typing import Literal
+from urllib.parse import quote, urlsplit, urlunsplit
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -15,6 +19,7 @@ from sqlalchemy import delete, func, or_, select, update
 
 from app.billing.models import Invoice
 from app.core.audit import audit
+from app.core.config import settings
 from app.core.database import control_session, organization_session
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.core.repository import add, required, serialize
@@ -27,6 +32,7 @@ from app.identity.models import (
     StaffUser,
 )
 from app.identity.passwords import hash_password
+from app.identity.password_policy import PasswordPolicy, validate_password
 from app.identity.recovery import issue_password_reset, revoke_staff_sessions
 from app.identity.router import throttle
 from app.identity.security import digest
@@ -39,7 +45,7 @@ from app.identity.service import (
     user_has_module,
 )
 from app.integrations.configuration import attach_effective_adapters
-from app.integrations.contracts import IntegrationFailure
+from app.integrations.contracts import IntegrationFailure, PlatformPaymentRequest
 from app.integrations.models import (
     AdapterCustomizationRequest,
     PlatformAdapterDefault,
@@ -56,7 +62,7 @@ from app.organizations.configuration import (
     render_communication_template,
     tenant_settings,
 )
-from app.organizations.entitlements import require_location_capacity
+from app.organizations.entitlements import require_location_capacity, resolve_entitlements
 from app.organizations.extraction import extraction_preflight
 from app.organizations.jurisdiction import jurisdiction
 from app.organizations.models import (
@@ -68,7 +74,12 @@ from app.organizations.models import (
     PlatformPlanFeature,
     PlatformSubscription,
 )
-from app.organizations.provisioning import activate, provision
+from app.organizations.provisioning import (
+    activate,
+    migrate_all,
+    provision,
+    rollback_provisioned_organization,
+)
 from app.organizations.tenant_resolution import (
     normalize_hostname,
     normalize_slug,
@@ -85,8 +96,13 @@ from app.platform_identity.models import (
     PlatformUser,
 )
 from app.platform_identity.service import PlatformActor, platform_audit, platform_or_bootstrap
-from app.rbac.bootstrap import seed_tenant_super_admin
+from app.rbac.bootstrap import (
+    PLATFORM_SUPER_ADMIN_ROLE_ID,
+    TENANT_SUPER_ADMIN_ROLE_ID,
+    seed_tenant_super_admin,
+)
 from app.rbac.default_roles import default_role_definitions
+from app.rbac.runtime import decide_tenant
 from app.rbac.dependencies import permit_platform_or_bootstrap
 from app.rbac.models import (
     PlatformApprovalPolicy,
@@ -108,6 +124,21 @@ from app.rbac.workflow import (
 )
 
 router = APIRouter(tags=["Organization administration"])
+
+
+# Restrict schema migration execution to the bootstrap authority or the
+# canonical Platform Super Admin role. Migrations are infrastructure actions
+# and are intentionally outside the ordinary permission registry.
+async def platform_migration_actor(
+    actor: PlatformActor = Depends(platform_or_bootstrap),
+) -> PlatformActor:
+    """Authorize the control-plane endpoint that migrates onboarded tenants."""
+
+    if not actor.is_bootstrap_operator and actor.role_id != PLATFORM_SUPER_ADMIN_ROLE_ID:
+        raise HTTPException(403, "Platform Super Admin access is required")
+    return actor
+
+
 # Defines the onboarding model, contract, or value object.
 class Onboarding(BaseModel):
     organization_id: UUID | None = None
@@ -129,6 +160,21 @@ class Onboarding(BaseModel):
     front_office_enabled: bool = True
     booking_enabled: bool = True
     patient_portal_enabled: bool = True
+    booking_widget_origin: str | None = Field(default=None, max_length=300)
+    plan_code: str | None = Field(default=None, min_length=2, max_length=80)
+    subscription_status: str = Field(default="trialing", pattern=r"^(trialing|active)$")
+    trial_ends_at: datetime | None = None
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    external_reference: str = Field(default="", max_length=180)
+    custom_domain_hostname: str | None = Field(default=None, max_length=253)
+    custom_domain_surfaces: list[str] = Field(default_factory=lambda: ["public"], max_length=3)
+    # Public self-onboarding is deliberately limited to an isolated trial.
+    # Platform Admin provisioning leaves this disabled and can still configure
+    # production domains, widgets, and other reviewed capabilities.
+    trial_mode: bool = False
+    trial_terms_accepted: bool = False
+    data_processing_acknowledged: bool = False
 
     # Handle routing for this module.
     @model_validator(mode="after")
@@ -144,7 +190,64 @@ class Onboarding(BaseModel):
             }:
                 raise ValueError("Each domain requires a hostname and application surface")
             binding["hostname"] = normalize_hostname(binding["hostname"])
+        if self.custom_domain_hostname:
+            self.custom_domain_hostname = normalize_hostname(self.custom_domain_hostname)
+            if not self.custom_domain_surfaces or any(
+                surface not in {"back-office", "public", "portal"} for surface in self.custom_domain_surfaces
+            ):
+                raise ValueError("Custom domain surfaces are invalid")
+        if self.trial_mode:
+            if self.booking_widget_origin or self.custom_domain_hostname:
+                raise ValueError("Secure trials cannot request custom domains or appointment widgets")
+            if not self.trial_terms_accepted or not self.data_processing_acknowledged:
+                raise ValueError("Secure trial terms and the no-PHI acknowledgement are required")
         return self
+
+
+class PublicPlatformSignup(BaseModel):
+    """Public self-onboarding payload submitted from Platform Home."""
+
+    organization_id: UUID | None = None
+    plan_code: str = Field(min_length=2, max_length=80)
+    payment_method_token: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=2, max_length=160)
+    slug: str = Field(min_length=3, max_length=80)
+    region: str = Field(default="CA", pattern="^[A-Z]{2}$")
+    location_name: str = Field(min_length=2, max_length=160)
+    location_address: str = Field(default="", max_length=500)
+    location_phone: str = Field(default="", max_length=40)
+    location_timezone: str = Field(default="America/Vancouver", min_length=2, max_length=60)
+    admin_name: str = Field(min_length=2, max_length=160)
+    admin_email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
+    front_office_enabled: bool = True
+    booking_enabled: bool = True
+    patient_portal_enabled: bool = True
+    # These fields remain accepted for backwards-compatible clients, but the
+    # public flow rejects them. They require assisted production activation.
+    booking_widget_origin: str | None = Field(default=None, max_length=300)
+    custom_hostname: str | None = Field(default=None, max_length=253)
+    custom_domain_surfaces: list[str] = Field(default_factory=lambda: ["public"], max_length=3)
+    trial_terms_accepted: bool = False
+    data_processing_acknowledged: bool = False
+
+    @model_validator(mode="after")
+    def normalize_request(self):
+        self.slug = normalize_slug(self.slug)
+        if self.custom_hostname:
+            self.custom_hostname = normalize_hostname(self.custom_hostname)
+            if not self.custom_domain_surfaces or any(
+                surface not in {"back-office", "public", "portal"} for surface in self.custom_domain_surfaces
+            ):
+                raise ValueError("Custom domain surfaces are invalid")
+        return self
+
+
+class PublicPaymentMethodInput(BaseModel):
+    """Minimal public request for exercising the sandbox payment gateway."""
+
+    plan_code: str = Field(min_length=2, max_length=80)
+    payment_method_token: str = Field(min_length=1, max_length=200)
+    region: str = Field(default="CA", pattern="^[A-Z]{2}$")
 
 
 # Defines the plan entitlement input model, contract, or value object.
@@ -377,11 +480,43 @@ async def platform_recovery_actor(
 
 
 # Defines the policy model, contract, or value object.
+class DiscountDefinition(BaseModel):
+    """Reusable percentage/fixed discount stored in tenant practice policy."""
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=160)
+    percentage_bps: int = Field(default=0, ge=0, le=10000)
+    fixed_cents: int = Field(default=0, ge=0, le=100000000)
+    starts_on: str | None = Field(default=None, max_length=10)
+    ends_on: str | None = Field(default=None, max_length=10)
+    perpetual: bool = True
+    active: bool = True
+
+    # Validate or enforce validate discount before the operation continues.
+    @model_validator(mode="after")
+    def valid_discount(self):
+        if self.percentage_bps == 0 and self.fixed_cents == 0:
+            raise ValueError("A discount must include a percentage, fixed amount, or both")
+        if not self.perpetual and not self.ends_on:
+            raise ValueError("A non-perpetual discount must have an end date")
+        if self.starts_on and self.ends_on and self.starts_on > self.ends_on:
+            raise ValueError("Discount end date must be on or after its start date")
+        return self
+
+
 class Policy(BaseModel):
+    """Tenant scheduling and billing policy exposed through organization settings."""
     cancellation_notice_hours: int = Field(ge=0, le=168, default=24)
     cancellation_fee_cents: int = Field(ge=0, le=100000, default=0)
     buffer_minutes: int = Field(ge=0, le=120, default=0)
     reminder_hours: int = Field(ge=1, le=168, default=24)
+    discount_application_mode: Literal[
+        "invoice_before_insurance",
+        "line_before_insurance",
+        "invoice_after_insurance",
+        "patient_after_insurance",
+    ] = "invoice_before_insurance"
+    discounts: list[DiscountDefinition] = Field(default_factory=list, max_length=100)
+    password_policy: PasswordPolicy = Field(default_factory=PasswordPolicy)
 
 
 # Defines the public content model, contract, or value object.
@@ -393,12 +528,32 @@ class PublicContent(BaseModel):
 
 # Defines the booking widget configuration model, contract, or value object.
 class BookingWidgetConfiguration(BaseModel):
+    mode: Literal["button", "div", "iframe"] = "button"
     accent_color: str = Field(default="#356b5d", pattern=r"^#[0-9a-fA-F]{6}$")
+    text_color: str = Field(default="#14231c", pattern=r"^#[0-9a-fA-F]{6}$")
+    background_color: str = Field(default="#f3f6f4", pattern=r"^#[0-9a-fA-F]{6}$")
+    surface_color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
+    border_color: str = Field(default="#d8e3de", pattern=r"^#[0-9a-fA-F]{6}$")
+    font_family: str = Field(default="inherit", max_length=160)
+    font_url: str = Field(default="", max_length=1000)
+    button_label: str = Field(default="Book an appointment", min_length=1, max_length=120)
+    title: str = Field(default="Book an appointment", min_length=1, max_length=160)
+    description: str = Field(default="Choose a time that works for you.", max_length=500)
+    success_message: str = Field(default="Your appointment request has been received.", max_length=500)
+    button_width: str = Field(default="auto", max_length=40, pattern=r"^(auto|[0-9]{1,4}px|[0-9]{1,3}%)$")
+    button_height: int = Field(default=48, ge=32, le=96)
+    button_radius: int = Field(default=8, ge=0, le=48)
+    button_font_size: int = Field(default=16, ge=10, le=32)
+    button_font_weight: Literal["400", "500", "600", "700", "800"] = "700"
+    panel_width: int = Field(default=680, ge=280, le=1000)
+    panel_radius: int = Field(default=14, ge=0, le=48)
+    panel_padding: int = Field(default=20, ge=8, le=48)
     default_location_id: str = Field(default="", max_length=36)
     allowed_location_ids: list[str] = Field(default_factory=list)
     allowed_service_ids: list[str] = Field(default_factory=list)
     allowed_provider_ids: list[str] = Field(default_factory=list)
     allowed_origins: list[str] = Field(default_factory=list, max_length=20)
+    origin_verifications: list[dict] = Field(default_factory=list, max_length=20)
 
     # Validate or enforce validate lists before the operation continues.
     @model_validator(mode="after")
@@ -412,9 +567,113 @@ class BookingWidgetConfiguration(BaseModel):
             if len(values) != len(set(values)):
                 raise ValueError("Booking widget lists cannot contain duplicate values")
         for origin in self.allowed_origins:
-            if not re.fullmatch(r"https://[a-zA-Z0-9.-]+(?::\d{2,5})?", origin):
-                raise ValueError("Widget origins must be exact HTTPS origins")
+            try:
+                normalize_widget_origin(origin)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+        for item in self.origin_verifications:
+            if not isinstance(item, dict) or not item.get("origin") or not item.get("dns_name"):
+                if not (isinstance(item, dict) and item.get("origin") and item.get("verification_method") in {"http", "admin"}) and not (isinstance(item, dict) and item.get("origin") and item.get("record_type") in {"HTTP", "ADMIN"}):
+                    raise ValueError("Widget origin verifications must include origin and dns_name")
+        if self.font_url and not self.font_url.startswith(("https://", "http://")):
+            raise ValueError("Widget font URL must use HTTP(S)")
+        if not re.fullmatch(r"[A-Za-z0-9 ,.'\"_-]+", self.font_family):
+            raise ValueError("Widget font family contains unsupported characters")
         return self
+
+
+# Defines the booking widget origin request contract.
+class BookingWidgetOriginInput(BaseModel):
+    origin: str = Field(min_length=4, max_length=300)
+
+
+class BookingWidgetDecisionInput(BaseModel):
+    status: Literal["approved", "rejected"]
+    reason: str = Field(default="", max_length=1000)
+
+
+def normalize_widget_origin(value: str) -> str:
+    """Normalize a website origin and reject paths that cannot be verified."""
+
+    parsed = urlsplit(value.strip())
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Widget origins must be HTTP(S) origins without paths or credentials")
+    if parsed.scheme == "http":
+        try:
+            is_local_ip = ipaddress.ip_address(parsed.hostname).is_private or ipaddress.ip_address(parsed.hostname).is_loopback
+        except ValueError:
+            is_local_ip = parsed.hostname.lower() in {"localhost", "127.0.0.1"}
+        if not is_local_ip:
+            raise ValueError("HTTP widget origins are limited to local or private IP addresses")
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("Widget origins must not include a path, query, or fragment")
+    port = parsed.port
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host + (f":{port}" if port else "")
+    return urlunsplit((parsed.scheme, netloc, "", "", ""))
+
+
+def _widget_request_record(config: dict | None) -> dict:
+    """Return the persisted purchase/domain approval state."""
+    values = config or {}
+    request = values.get("approval_request")
+    return request if isinstance(request, dict) else {
+        "status": "approved" if values.get("origin_verifications") or values.get("allowed_origins") else "not_requested",
+        "origin": "",
+        "requested_at": None,
+        "approved_at": None,
+        "approved_by": None,
+        "rejection_reason": "",
+        "request_type": "initial",
+        "previous_origin": None,
+    }
+
+
+async def _commercial_summary(db, organization_id: str, legacy_plan: str = "") -> dict:
+    """Return the plan/subscription that currently governs a tenant.
+
+    ``Organization.plan`` predates the commercial subscription tables and is
+    retained for compatibility.  Platform surfaces must prefer the current
+    subscription (and its plan catalogue row) whenever one exists.
+    """
+    row = (
+        await db.execute(
+            select(PlatformCommercialAccount, PlatformSubscription, PlatformPlan)
+            .outerjoin(
+                PlatformSubscription,
+                PlatformSubscription.organization_id == PlatformCommercialAccount.organization_id,
+            )
+            .outerjoin(PlatformPlan, PlatformPlan.id == PlatformSubscription.plan_id)
+            .where(PlatformCommercialAccount.organization_id == organization_id)
+        )
+    ).first()
+    account, subscription, plan = row if row else (None, None, None)
+    plan_code = (plan.code if plan else None) or (account.plan_code if account else None) or legacy_plan
+    metadata = dict(account.commercial_metadata or {}) if account else {}
+    trial = metadata.get("self_onboarding") if isinstance(metadata.get("self_onboarding"), dict) else None
+    return {
+        "plan_code": plan_code or "",
+        "plan_name": plan.name if plan else "",
+        "subscription_status": (subscription.status if subscription else None) or (account.subscription_status if account else "not_configured"),
+        "account_status": account.account_status if account else "not_configured",
+        "self_onboarding": trial,
+    }
+
+
+def _widget_origin_record(origin: str) -> dict:
+    # Origin approval is intentionally a soft, platform-owned verification.
+    # DNS/HTTP proof is not required for the widget entitlement; the approved
+    # origin is bound to the widget when the platform operator accepts it.
+    return {
+        "origin": origin,
+        "dns_name": "",
+        "token": "",
+        "verification_method": "admin",
+        "verified_at": None,
+        "verified_by": None,
+    }
 
 
 # Defines the org settings model, contract, or value object.
@@ -506,9 +765,21 @@ class AdapterDefaultInput(BaseModel):
     region: str = Field(pattern=r"^(\*|[A-Z]{2})$")
     capability: str = Field(min_length=2, max_length=80)
     provider_name: str = Field(min_length=2, max_length=120)
+    mode: Literal["auto", "sandbox", "live"] = "auto"
     active: bool = True
     reason: str = Field(min_length=8, max_length=1000)
     approval_request_id: str | None = Field(default=None, max_length=36)
+
+    @model_validator(mode="after")
+    def valid_provider_mode(self):
+        registration = REGISTRY.get(self.capability, {}).get(self.provider_name)
+        if registration is None:
+            raise ValueError("Unknown adapter provider")
+        if self.mode == "live" and registration.sandbox:
+            raise ValueError("Selected provider is sandbox-only")
+        if self.mode == "sandbox" and not registration.sandbox:
+            raise ValueError("Selected provider has no sandbox adapter")
+        return self
 
     # Handle known provider for this module.
     @model_validator(mode="after")
@@ -522,6 +793,15 @@ class AdapterDefaultInput(BaseModel):
 class TenantActivationInput(BaseModel):
     reason: str = Field(default="Activate tenant after onboarding", min_length=8, max_length=1000)
     approval_request_id: str | None = Field(default=None, max_length=36)
+
+
+# Defines the secure trial production activation input model, contract, or value object.
+class ProductionActivationInput(BaseModel):
+    reason: str = Field(min_length=8, max_length=1000)
+    allow_phi_import: bool = True
+    allow_custom_domains: bool = True
+    allow_widgets: bool = True
+    allow_sso_and_integrations: bool = True
 
 
 # Defines the communication template input model, contract, or value object.
@@ -573,7 +853,16 @@ def staff_invitation_url(raw_token: str, tenant_slug: str) -> str:
 
 
 # Handle invite for this module.
-async def invite(db, body, actor, clinic_name="your clinic", *, delivery_actor=None, tenant_slug=""):
+async def invite(
+    db,
+    body,
+    actor,
+    clinic_name="your clinic",
+    *,
+    delivery_actor=None,
+    tenant_slug="",
+    deliver_immediately=True,
+):
     assignments = assignment_inputs(body)
     assignment_keys = [(item.scope, item.location_id) for item in assignments]
     if len(assignment_keys) != len(set(assignment_keys)):
@@ -646,19 +935,23 @@ async def invite(db, body, actor, clinic_name="your clinic", *, delivery_actor=N
             "invitation_link": staff_invitation_url(raw, tenant_slug),
         },
     )
-    await deliver_message_now(db, delivery_actor or actor, OutboxMessage(
-            kind="staff.invitation",
-            payload={
-                "destination": record.email,
-                "subject": subject,
-                "body": message_body,
-                "channel": template.get("channel", "email"),
-                "user_id": record.id,
-            },
-            idempotency_key=f"staff-invitation:{record.id}",
-            created_by=actor,
-            updated_by=actor,
-        ))
+    message = OutboxMessage(
+        kind="staff.invitation",
+        payload={
+            "destination": record.email,
+            "subject": subject,
+            "body": message_body,
+            "channel": template.get("channel", "email"),
+            "user_id": record.id,
+        },
+        idempotency_key=f"staff-invitation:{record.id}",
+        created_by=actor,
+        updated_by=actor,
+    )
+    if deliver_immediately:
+        await deliver_message_now(db, delivery_actor or actor, message)
+    else:
+        db.add(message)
     audit(
         db,
         actor,
@@ -671,6 +964,37 @@ async def invite(db, body, actor, clinic_name="your clinic", *, delivery_actor=N
 
 
 # Handle onboarding for this module.
+@router.post("/platform/migrations/tenants")
+async def migrate_onboarded_tenants(
+    actor: PlatformActor = Depends(platform_migration_actor),
+):
+    """Upgrade control, template, and every existing onboarded tenant schema."""
+
+    results = await migrate_all()
+    failed = [result for result in results if not result["migrated"]]
+    async with control_session() as db:
+        platform_audit(
+            db,
+            actor.user_id,
+            "platform.migrations.tenants",
+            details={
+                "tenant_count": len(results),
+                "failed_count": len(failed),
+                "results": results,
+            },
+        )
+    payload = {
+        "success": not failed,
+        "tenant_count": len(results),
+        "migrated_count": len(results) - len(failed),
+        "failed_count": len(failed),
+        "results": results,
+    }
+    if failed:
+        return JSONResponse(status_code=207, content=payload)
+    return payload
+
+
 @router.post("/platform/organizations", status_code=201)
 async def onboarding(
     body: Onboarding,
@@ -682,6 +1006,15 @@ async def onboarding(
         defaults = await platform_configuration(db)
         default_policy = Policy(**defaults.default_policy).model_dump()
         default_templates = dict(defaults.communication_templates)
+        if body.plan_code:
+            selected_plan = await db.scalar(
+                select(PlatformPlan).where(
+                    PlatformPlan.code == body.plan_code,
+                    PlatformPlan.active,
+                )
+            )
+            if selected_plan is None:
+                raise HTTPException(422, "Selected plan is unavailable")
         organizations = (await db.scalars(select(Organization))).all()
         assigned = {
             binding["hostname"]
@@ -690,101 +1023,361 @@ async def onboarding(
         }
         if assigned.intersection(binding["hostname"] for binding in body.domains):
             raise HTTPException(409, "Custom domain is already assigned")
+
+        # The provisioning request is retriable.  A proxy/client can lose the
+        # response after all tenant work has committed; returning the already
+        # active organization prevents a second location or invitation from
+        # being created when the operator submits the same request again.
+        existing = await db.get(Organization, str(body.organization_id)) if body.organization_id else None
+        if existing is None and body.organization_id is None:
+            # A browser reload loses the client-held request id.  Treat an
+            # active tenant with the same normalized slug and name as the
+            # completed request instead of provisioning a second copy.
+            slug_match = await db.scalar(
+                select(Organization).where(Organization.slug == body.slug)
+            )
+            if (
+                slug_match is not None
+                and slug_match.status == "active"
+                and slug_match.name.strip().casefold() == body.name.strip().casefold()
+            ):
+                existing = slug_match
+    if existing is not None and existing.status == "active":
+        async with organization_session(existing) as db:
+            location = await db.scalar(select(Location).order_by(Location.created_at))
+        return {
+            "organization_id": existing.id,
+            "slug": existing.slug,
+            "location_id": location.id if location else None,
+            "invitation": None,
+            "status": "active",
+            "already_provisioned": True,
+        }
     org = await provision(
         body.name,
         str(body.organization_id) if body.organization_id else None,
         body.slug,
         body.region,
     )
-    async with organization_session(org) as db:
-        runtime = await configure_tenant(
-            db,
-            visibility=body.visibility,
-            branding=body.branding,
-            policy=default_policy,
-            actor_id=actor.user_id,
-        )
-        runtime.communication_templates = default_templates
-        # Platform provisioning uses a string audit identity for tenant writes,
-        # while immediate delivery needs the tenant-scoped provider context.
-        delivery_actor = Actor(
-            actor.user_id,
-            org,
-            actor.name,
-            "platform",
-            settings=runtime,
-            adapter_names=await attach_effective_adapters(org),
-            assignment_scope="organization",
-        )
-        location = await db.scalar(select(Location).order_by(Location.created_at))
-        if location is None:
-            location = await add(
+    try:
+        async with organization_session(org) as db:
+            runtime = await configure_tenant(
                 db,
-                Location,
-                {
-                    "name": body.location_name,
-                    "address": body.location_address,
-                    "phone": body.location_phone,
-                    "latitude": body.location_latitude,
-                    "longitude": body.location_longitude,
-                    "osm_place_id": body.location_osm_place_id,
-                    "timezone": body.location_timezone,
-                },
+                visibility=body.visibility,
+                branding=body.branding,
+                policy=default_policy,
+                actor_id=actor.user_id,
+            )
+            if body.booking_widget_origin:
+                try:
+                    widget_origin = normalize_widget_origin(body.booking_widget_origin)
+                except ValueError as exc:
+                    raise HTTPException(422, str(exc)) from exc
+                runtime.booking_widget = {
+                    **(runtime.booking_widget or {}),
+                    "approval_request": {
+                        "status": "pending",
+                        "origin": widget_origin,
+                        "requested_at": datetime.now(UTC).isoformat(),
+                        "approved_at": None,
+                        "approved_by": None,
+                        "rejection_reason": "",
+                    },
+                    "origin_verifications": [_widget_origin_record(widget_origin)],
+                    "allowed_origins": [],
+                }
+            runtime.communication_templates = default_templates
+            # Platform provisioning uses a string audit identity for tenant writes,
+            # while immediate delivery needs the tenant-scoped provider context.
+            delivery_actor = Actor(
+                actor.user_id,
+                org,
+                actor.name,
                 "platform",
+                settings=runtime,
+                adapter_names=await attach_effective_adapters(org),
+                assignment_scope="organization",
             )
-        elif body.location_phone:
-            # Complete onboarding captures the phone for an existing first location too.
-            location.phone = body.location_phone
-            location.updated_by = actor.user_id
-        existing = await db.scalar(select(StaffUser).where(StaffUser.email == body.admin_email.lower()))
-        invitation = (
-            None
-            if existing
-            else await invite(
-                db,
-                InviteInput(
-                    name=body.admin_name,
-                    email=body.admin_email,
-                    assignments=[AccessAssignmentInput(role=default_role_name(), scope="organization")],
-                ),
-                "platform",
-                org.name,
-                delivery_actor=delivery_actor,
-                tenant_slug=org.slug,
+            location = await db.scalar(select(Location).order_by(Location.created_at))
+            if location is None:
+                location = await add(
+                    db,
+                    Location,
+                    {
+                        "name": body.location_name,
+                        "address": body.location_address,
+                        "phone": body.location_phone,
+                        "latitude": body.location_latitude,
+                        "longitude": body.location_longitude,
+                        "osm_place_id": body.location_osm_place_id,
+                        "timezone": body.location_timezone,
+                    },
+                    "platform",
+                )
+            elif body.location_phone:
+                # Complete onboarding captures the phone for an existing first location too.
+                location.phone = body.location_phone
+                location.updated_by = actor.user_id
+            existing = await db.scalar(select(StaffUser).where(StaffUser.email == body.admin_email.lower()))
+            pending_invitation = await db.scalar(
+                select(StaffInvite).where(
+                    StaffInvite.email == body.admin_email.lower(),
+                    StaffInvite.status == "pending",
+                    StaffInvite.used.is_(False),
+                    StaffInvite.expires > int(time.time()),
+                )
             )
-        )
-        audit(db, "platform", "onboard", "organization", org.id)
-    async with control_session() as db:
-        row = await db.get(Organization, org.id)
-        row.domains = body.domains
-        row.front_office_enabled = body.front_office_enabled
-        row.booking_enabled = body.booking_enabled
-        row.patient_portal_enabled = body.patient_portal_enabled
-        row.updated_by = actor.user_id
-        commercial = await db.scalar(
-            select(PlatformCommercialAccount).where(
-                PlatformCommercialAccount.organization_id == org.id
+            onboarding_role = await db.get(TenantRole, TENANT_SUPER_ADMIN_ROLE_ID)
+            if onboarding_role is None:
+                raise HTTPException(503, "Tenant setup roles are unavailable")
+            invitation = (
+                None
+                if existing or pending_invitation
+                else await invite(
+                    db,
+                    InviteInput(
+                        name=body.admin_name,
+                        email=body.admin_email,
+                        # The first account is the tenant setup administrator.  It
+                        # must receive the protected canonical role directly;
+                        # assigning the legacy admin role here caused onboarding
+                        # to create a second organization assignment later.
+                        assignments=[AccessAssignmentInput(role=onboarding_role.name, scope="organization")],
+                    ),
+                    "platform",
+                    org.name,
+                    delivery_actor=delivery_actor,
+                    tenant_slug=org.slug,
+                    # Keep the invitation in the tenant transaction.  A mail
+                    # provider is an external side effect, so it is delivered
+                    # only after the tenant and control-plane commits below.
+                    deliver_immediately=False,
+                )
             )
-        )
-        if commercial is None:
-            db.add(
-                PlatformCommercialAccount(
+            audit(db, "platform", "onboard", "organization", org.id)
+        async with control_session() as db:
+            row = await db.get(Organization, org.id)
+            row.domains = body.domains
+            row.front_office_enabled = body.front_office_enabled
+            row.booking_enabled = body.booking_enabled
+            row.patient_portal_enabled = body.patient_portal_enabled
+            row.updated_by = actor.user_id
+            commercial = await db.scalar(
+                select(PlatformCommercialAccount).where(
+                    PlatformCommercialAccount.organization_id == org.id
+                )
+            )
+            if commercial is None:
+                commercial = PlatformCommercialAccount(
                     organization_id=org.id,
                     account_status="active",
                     plan_code=row.plan,
                     created_by=actor.user_id,
                     updated_by=actor.user_id,
                 )
-            )
-        platform_audit(db, actor.user_id, "organization.provision", organization_id=org.id)
-    await activate(org.id)
-    return {
-        "organization_id": org.id,
-        "slug": org.slug,
-        "location_id": location.id,
-        "invitation": invitation,
-        "status": "active",
-    }
+                db.add(commercial)
+            if body.plan_code:
+                plan = await db.scalar(
+                    select(PlatformPlan).where(
+                        PlatformPlan.code == body.plan_code,
+                        PlatformPlan.active,
+                    )
+                )
+                if plan is None:
+                    raise HTTPException(422, "Selected plan is unavailable")
+                subscription = await db.scalar(
+                    select(PlatformSubscription).where(
+                        PlatformSubscription.organization_id == org.id
+                    )
+                )
+                started_at = body.current_period_start or datetime.now(UTC)
+                if subscription is None:
+                    subscription = PlatformSubscription(
+                        organization_id=org.id,
+                        plan_id=plan.id,
+                        created_by=actor.user_id,
+                        updated_by=actor.user_id,
+                    )
+                    db.add(subscription)
+                subscription.plan_id = plan.id
+                subscription.status = body.subscription_status
+                subscription.trial_ends_at = body.trial_ends_at
+                subscription.current_period_start = started_at
+                subscription.current_period_end = body.current_period_end or body.trial_ends_at
+                subscription.external_reference = body.external_reference
+                subscription.subscription_metadata = {
+                    **(subscription.subscription_metadata or {}),
+                    "source": "public_platform_signup" if actor.user_id == "self-onboarding" else "platform_admin",
+                    "payment_status": "authorized" if body.external_reference else "not_applicable",
+                }
+                subscription.updated_by = actor.user_id
+                row.plan = plan.code
+                commercial.plan_code = plan.code
+                commercial.subscription_status = body.subscription_status
+                commercial.external_reference = body.external_reference
+                commercial.updated_by = actor.user_id
+                platform_audit(
+                    db,
+                    actor.user_id,
+                    "billing.subscription.create",
+                    organization_id=org.id,
+                    details={
+                        "plan_code": plan.code,
+                        "status": body.subscription_status,
+                        "trial_ends_at": body.trial_ends_at.isoformat() if body.trial_ends_at else None,
+                        "payment_reference": body.external_reference,
+                    },
+                )
+            if body.trial_mode:
+                if not body.trial_terms_accepted or not body.data_processing_acknowledged:
+                    raise HTTPException(
+                        422,
+                        "Secure trial terms and the no-PHI acknowledgement are required",
+                    )
+                commercial.commercial_metadata = {
+                    **(commercial.commercial_metadata or {}),
+                    "self_onboarding": {
+                        "mode": "secure_trial",
+                        "phi_import_allowed": False,
+                        "production_activation": "required",
+                        "custom_domains": "assisted_activation",
+                        "widgets": "assisted_activation",
+                        "sso_and_integrations": "assisted_activation",
+                        "trial_terms_accepted": True,
+                        "data_processing_acknowledged": True,
+                        "administrator_verification": "invite_acceptance",
+                        "mfa_required": True,
+                        "accepted_at": datetime.now(UTC).isoformat(),
+                    },
+                }
+                platform_audit(
+                    db,
+                    actor.user_id,
+                    "organization.secure-trial.started",
+                    organization_id=org.id,
+                    details={
+                        "phi_import_allowed": False,
+                        "production_activation": "required",
+                        "custom_domains": "assisted_activation",
+                        "widgets": "assisted_activation",
+                    },
+                )
+                enqueue_platform_notification(
+                    db,
+                    kind="organization.secure-trial.started",
+                    reference_id=str(org.id),
+                    actor_id=actor.user_id,
+                    payload={
+                        "organization_id": org.id,
+                        "organization_name": row.name,
+                        "slug": row.slug,
+                        "plan_code": commercial.plan_code or row.plan,
+                        "subscription_status": commercial.subscription_status or "trialing",
+                        "detail": f"{row.name} started a secure trial and requires production review",
+                        "cta_label": "Review secure trial",
+                        "target_url": f"/admin/billing-plans/tenants/{org.id}/",
+                    },
+                )
+            if body.custom_domain_hostname:
+                commercial.commercial_metadata = {
+                    **(commercial.commercial_metadata or {}),
+                    "custom_domain_request": {
+                        "hostname": body.custom_domain_hostname,
+                        "surfaces": body.custom_domain_surfaces,
+                        "status": "pending_verification",
+                        "requested_at": datetime.now(UTC).isoformat(),
+                    },
+                }
+                platform_audit(
+                    db,
+                    actor.user_id,
+                    "organization.custom-domain.request",
+                    organization_id=org.id,
+                    details={
+                        "hostname": body.custom_domain_hostname,
+                        "surfaces": body.custom_domain_surfaces,
+                        "status": "pending_verification",
+                        "source": "public_platform_signup",
+                    },
+                )
+            if body.booking_widget_origin:
+                platform_audit(
+                    db,
+                    actor.user_id,
+                    "organization.booking-widget.request",
+                    organization_id=org.id,
+                    details={
+                        "origin": widget_origin,
+                        "plan_code": commercial.plan_code or row.plan,
+                        "subscription_status": commercial.subscription_status or "not_configured",
+                        "source": "onboarding",
+                    },
+                )
+                enqueue_platform_notification(
+                    db,
+                    kind="booking-widget.requested",
+                    reference_id=f"{org.id}:{hashlib.sha256(widget_origin.encode()).hexdigest()[:16]}",
+                    actor_id=actor.user_id,
+                    payload={
+                        "organization_id": org.id,
+                        "organization_name": row.name,
+                        "slug": row.slug,
+                        "origin": widget_origin,
+                        "plan_code": commercial.plan_code or row.plan,
+                        "plan_name": "",
+                        "subscription_status": commercial.subscription_status or "not_configured",
+                        "detail": f"{row.name} requested widget approval for {widget_origin} · {commercial.plan_code or row.plan or 'No plan'} · {commercial.subscription_status or 'No subscription'}",
+                        "cta_label": "Review widget request",
+                        "target_url": "/admin/onboarding/",
+                    },
+                )
+            platform_audit(db, actor.user_id, "organization.provision", organization_id=org.id)
+        await activate(org.id)
+        result = {
+            "organization_id": org.id,
+            "slug": org.slug,
+            "location_id": location.id,
+            "invitation": invitation,
+            "status": "active",
+        }
+    except Exception:
+        if getattr(org, "_provision_created", False):
+            try:
+                await rollback_provisioned_organization(
+                    org.schema_name,
+                    org.id,
+                    org.database_alias,
+                )
+            except Exception:
+                # Preserve the original onboarding failure while retaining a
+                # durable failure marker if cleanup cannot complete.
+                async with control_session() as db:
+                    failed_org = await db.get(Organization, org.id)
+                    if failed_org is not None:
+                        failed_org.status = "failed"
+                        failed_org.last_error = "onboarding_rollback_failed"
+        raise
+
+    # The tenant is now active and all onboarding rows are committed.  Deliver
+    # the staged invitation after commit so a provider failure cannot roll back
+    # an otherwise valid tenant, and the outbox row remains available for retry.
+    if invitation:
+        try:
+            async with organization_session(org) as db:
+                message = await db.scalar(
+                    select(OutboxMessage).where(
+                        OutboxMessage.idempotency_key
+                        == f"staff-invitation:{invitation['invite_id']}"
+                    )
+                )
+                if message is not None and message.status in {"pending", "retry"}:
+                    await deliver_message_now(db, delivery_actor, message)
+        except Exception:
+            # The dispatcher will retry the pending outbox message.  Do not
+            # report onboarding as failed after the tenant has committed.
+            pass
+    return result
+
 
 
 @router.get("/platform/geocode/search")
@@ -901,9 +1494,9 @@ async def create_organization_location(
 async def platform_organizations(actor: PlatformActor = Depends(permit_platform_or_bootstrap("organizations.organization_tenant_record.read"))):
     async with control_session() as db:
         rows = (await db.scalars(select(Organization).order_by(Organization.name))).all()
-        accounts = {
-            row.organization_id: row
-            for row in (await db.scalars(select(PlatformCommercialAccount))).all()
+        commercial = {
+            row.id: await _commercial_summary(db, row.id, row.plan)
+            for row in rows
         }
         platform_audit(db, actor.user_id, "organization.list")
         return [
@@ -920,15 +1513,139 @@ async def platform_organizations(actor: PlatformActor = Depends(permit_platform_
                 "patient_portal_enabled": row.patient_portal_enabled,
                 "last_error": row.last_error,
                 "commercial": {
-                    "account_status": accounts[row.id].account_status,
-                    "plan_code": accounts[row.id].plan_code,
-                    "subscription_status": accounts[row.id].subscription_status,
+                    "account_status": commercial[row.id]["account_status"],
+                    "plan_code": commercial[row.id]["plan_code"],
+                    "plan_name": commercial[row.id]["plan_name"],
+                    "subscription_status": commercial[row.id]["subscription_status"],
+                    "self_onboarding": commercial[row.id]["self_onboarding"],
                 }
-                if row.id in accounts
+                if commercial[row.id]["account_status"] != "not_configured"
                 else None,
             }
             for row in rows
         ]
+
+
+@router.get("/platform/organizations/booking-widget-requests")
+async def platform_booking_widget_requests(
+    status: str = Query(default="pending", pattern="^(all|pending|approved|rejected|not_requested)$"),
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("organizations.organization_tenant_record.read")),
+):
+    """List tenant widget purchase/domain requests for the onboarding workspace."""
+    del actor
+    async with control_session() as control_db:
+        organizations = (await control_db.scalars(select(Organization).order_by(Organization.name))).all()
+        commercial = {
+            organization.id: await _commercial_summary(control_db, organization.id, organization.plan)
+            for organization in organizations
+        }
+    items = []
+    for organization in organizations:
+        async with organization_session(organization) as tenant_db:
+            runtime = await tenant_settings(tenant_db)
+            request = _widget_request_record(runtime.booking_widget)
+        if status != "all" and request.get("status") != status:
+            continue
+        if request.get("status") == "not_requested":
+            continue
+        items.append({
+            "organization_id": organization.id,
+            "organization_name": organization.name,
+            "slug": organization.slug,
+            # Keep the legacy field for older clients, but expose the
+            # subscription-backed values that govern the tenant today.
+            "plan": commercial[organization.id]["plan_code"] or organization.plan,
+            "plan_code": commercial[organization.id]["plan_code"] or organization.plan,
+            "plan_name": commercial[organization.id]["plan_name"],
+            "subscription_status": commercial[organization.id]["subscription_status"],
+            "account_status": commercial[organization.id]["account_status"],
+            "status": request.get("status"),
+            "origin": request.get("origin", ""),
+            "requested_at": request.get("requested_at"),
+            "approved_at": request.get("approved_at"),
+            "approved_by": request.get("approved_by"),
+            "rejection_reason": request.get("rejection_reason", ""),
+            "request_type": request.get("request_type", "initial"),
+            "previous_origin": request.get("previous_origin"),
+        })
+    return {"items": items}
+
+
+@router.post("/platform/organizations/{identifier}/booking-widget-request/decision")
+async def decide_booking_widget_request(
+    identifier: str,
+    body: BookingWidgetDecisionInput,
+    actor: PlatformActor = Depends(permit_platform_or_bootstrap("organizations.tenant_onboarding.provision")),
+):
+    """Approve or reject a purchased widget/domain request."""
+    async with control_session() as control_db:
+        organization = await control_db.get(Organization, identifier)
+    if organization is None:
+        raise HTTPException(404, "Organization not found")
+    async with organization_session(organization) as db:
+        runtime = await tenant_settings(db)
+        current = runtime.booking_widget or {}
+        request = _widget_request_record(current)
+        if request.get("status") not in {"pending", "rejected"}:
+            raise HTTPException(409, "There is no pending widget request for this tenant")
+        next_status = body.status
+        next_request = {
+            **request,
+            "status": next_status,
+            "approved_at": datetime.now(UTC).isoformat() if next_status == "approved" else None,
+            "approved_by": actor.user_id if next_status == "approved" else None,
+            "rejection_reason": body.reason.strip() if next_status == "rejected" else "",
+        }
+        runtime.booking_widget = {**current, "approval_request": next_request}
+        if next_status == "approved":
+            approved_origin = request.get("origin", "")
+            records = list(current.get("origin_verifications") or [])
+            approved_record = next((item for item in records if item.get("origin") == approved_origin), None)
+            if approved_record is None:
+                approved_record = {
+                    "origin": approved_origin,
+                    "dns_name": "",
+                    "token": "",
+                    "verification_method": "admin",
+                    "verified_at": next_request["approved_at"],
+                    "verified_by": actor.user_id,
+                }
+                records.append(approved_record)
+            else:
+                approved_record.update(
+                    verification_method="admin",
+                    verified_at=next_request["approved_at"],
+                    verified_by=actor.user_id,
+                )
+            runtime.booking_widget["origin_verifications"] = records
+            runtime.booking_widget["allowed_origins"] = [approved_origin]
+        elif next_status == "rejected":
+            runtime.booking_widget["allowed_origins"] = []
+        await configure_tenant(db, actor_id=actor.user_id, booking_widget=runtime.booking_widget)
+        audit(
+            db,
+            actor.user_id,
+            f"booking-widget.request.{next_status}",
+            "organization",
+            organization.id,
+            origin=request.get("origin", ""),
+            previous_origin=request.get("previous_origin"),
+            request_type=request.get("request_type", "initial"),
+        )
+    async with control_session() as control_db:
+        platform_audit(
+            control_db,
+            actor.user_id,
+            f"organization.booking-widget.{next_status}",
+            organization_id=organization.id,
+            details={
+                "origin": request.get("origin", ""),
+                "previous_origin": request.get("previous_origin"),
+                "request_type": request.get("request_type", "initial"),
+                "reason": body.reason,
+            },
+        )
+    return {"organization_id": organization.id, "status": next_status, "origin": request.get("origin", "")}
 
 
 @router.post("/platform/organizations/{identifier}/activate")
@@ -1072,6 +1789,85 @@ async def activate_organization(
     return {"organization_id": organization.id, "status": "active", "changed": True}
 
 
+@router.post("/platform/organizations/{identifier}/production-activation")
+async def activate_secure_trial_for_production(
+    identifier: str,
+    body: ProductionActivationInput,
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap(
+            "organizations.tenant_onboarding.activate",
+            workflow_handles_approval=True,
+        )
+    ),
+):
+    """Convert a self-service secure trial into a reviewed production tenant."""
+
+    async with control_session() as db:
+        organization = await db.get(Organization, identifier)
+        if organization is None:
+            raise HTTPException(404, "Organization not found")
+        account = await db.scalar(
+            select(PlatformCommercialAccount).where(
+                PlatformCommercialAccount.organization_id == identifier
+            )
+        )
+        if account is None:
+            raise HTTPException(409, "The organization has no commercial account")
+        metadata = dict(account.commercial_metadata or {})
+        trial = dict(metadata.get("self_onboarding") or {})
+        if trial.get("mode") != "secure_trial":
+            raise HTTPException(409, "This organization was not created through secure self-onboarding")
+        if trial.get("production_activation") == "approved":
+            return {
+                "organization_id": identifier,
+                "status": "already_active",
+                "changed": False,
+            }
+        now = datetime.now(UTC)
+        trial.update(
+            {
+                "production_activation": "approved",
+                "phi_import_allowed": body.allow_phi_import,
+                "custom_domains": "enabled" if body.allow_custom_domains else "assisted_activation",
+                "widgets": "enabled" if body.allow_widgets else "assisted_activation",
+                "sso_and_integrations": "enabled" if body.allow_sso_and_integrations else "assisted_activation",
+                "approved_at": now.isoformat(),
+                "approved_by": actor.user_id,
+            }
+        )
+        account.commercial_metadata = {**metadata, "self_onboarding": trial}
+        account.account_status = "active"
+        account.subscription_status = "active"
+        account.updated_by = actor.user_id
+        subscription = await db.scalar(
+            select(PlatformSubscription).where(
+                PlatformSubscription.organization_id == identifier
+            )
+        )
+        if subscription is not None:
+            subscription.status = "active"
+            subscription.updated_by = actor.user_id
+        platform_audit(
+            db,
+            actor.user_id,
+            "organization.secure-trial.production-activation",
+            organization_id=identifier,
+            reason=body.reason,
+            details={
+                "phi_import_allowed": body.allow_phi_import,
+                "custom_domains": body.allow_custom_domains,
+                "widgets": body.allow_widgets,
+                "sso_and_integrations": body.allow_sso_and_integrations,
+            },
+        )
+    return {
+        "organization_id": identifier,
+        "status": "active",
+        "changed": True,
+        "production_activation": trial,
+    }
+
+
 # Handle platform organizations query for this module.
 @router.get("/platform/organizations/query")
 async def platform_organizations_query(
@@ -1108,16 +1904,10 @@ async def platform_organizations_query(
                 .limit(page_size)
             )
         ).all()
-        accounts = {
-            row.organization_id: row
-            for row in (
-                await db.scalars(
-                    select(PlatformCommercialAccount).where(
-                        PlatformCommercialAccount.organization_id.in_([item.id for item in rows])
-                    )
-                )
-            ).all()
-        } if rows else {}
+        commercial = {
+            row.id: await _commercial_summary(db, row.id, row.plan)
+            for row in rows
+        }
         platform_audit(
             db,
             actor.user_id,
@@ -1142,10 +1932,11 @@ async def platform_organizations_query(
                     "patient_portal_enabled": row.patient_portal_enabled,
                     "last_error": row.last_error,
                     "commercial": {
-                        "account_status": accounts[row.id].account_status,
-                        "plan_code": accounts[row.id].plan_code,
-                        "subscription_status": accounts[row.id].subscription_status,
-                    } if row.id in accounts else None,
+                        "account_status": commercial[row.id]["account_status"],
+                        "plan_code": commercial[row.id]["plan_code"],
+                        "plan_name": commercial[row.id]["plan_name"],
+                        "subscription_status": commercial[row.id]["subscription_status"],
+                    } if commercial[row.id]["account_status"] != "not_configured" else None,
                 }
                 for row in rows
             ],
@@ -1238,28 +2029,51 @@ async def platform_integration_status(actor: PlatformActor = Depends(permit_plat
         ).all()
         result = []
         for capability, registrations in REGISTRY.items():
-            applicable = [row for row in defaults if row.capability == capability and row.active]
+            applicable = [row for row in defaults if row.capability == capability]
             selected = next((row for row in applicable if row.region == "*"), None) or next(iter(applicable), None)
             registration = registrations.get(selected.provider_name) if selected else None
+            mode = selected.mode if selected else "auto"
+            sandbox_only = bool(
+                registration
+                and (mode == "sandbox" or (mode == "auto" and registration.sandbox))
+            )
+            if selected is None:
+                state = "unconfigured"
+                ready = False
+            elif not selected.active:
+                state = "disabled"
+                ready = False
+            elif registration is None:
+                state = "unavailable"
+                ready = False
+            elif mode == "live" and registration.sandbox:
+                state = "invalid-mode"
+                ready = False
+            elif mode == "sandbox" and not registration.sandbox:
+                state = "invalid-mode"
+                ready = False
+            elif mode == "live" and not settings().allow_live_integrations:
+                state = "live-disabled"
+                ready = False
+            else:
+                state = "sandbox-only" if sandbox_only else "ready"
+                ready = True
             result.append(
                 {
                     "capability": capability,
                     "registered_providers": sorted(registrations),
-                    "configured": bool(applicable),
+                    "configured": bool(selected),
                     "provider_name": selected.provider_name if selected else "",
-                    "ready": bool(selected and registration),
-                    "sandbox_only": bool(registration and registration.sandbox),
-                    "state": (
-                        "unavailable" if not registrations
-                        else "registered" if not applicable
-                        else "unavailable" if registration is None
-                        else "sandbox-only" if registration.sandbox
-                        else "ready"
-                    ),
+                    "active": bool(selected and selected.active),
+                    "mode": mode,
+                    "ready": ready,
+                    "sandbox_only": sandbox_only,
+                    "state": state if registrations else "unavailable",
                     "regional_defaults": [
                         {
                             "region": row.region,
                             "provider_name": row.provider_name,
+                            "mode": row.mode,
                             "active": row.active,
                             "installed": row.provider_name in registrations,
                         }
@@ -1893,6 +2707,175 @@ async def public_platform_plans():
         return [await platform_plan_payload_with_entitlements(db, plan) for plan in plans]
 
 
+async def _authorize_public_signup_payment(
+    *, plan: PlatformPlan, payment_method_token: str, idempotency_key: str, region: str
+):
+    """Use the installed sandbox gateway to authorize a method without charging it."""
+
+    gateway = resolve_registered(
+        "payment_gateway",
+        "sandbox",
+        organization_id="platform-signup",
+        region=region,
+        enforce_live=False,
+    )
+    try:
+        return await gateway.authorize_platform(
+            PlatformPaymentRequest(
+                idempotency_key=idempotency_key,
+                amount_cents=max(plan.price_cents, 1),
+                currency=plan.currency,
+                payment_method_token=payment_method_token,
+            )
+        )
+    except IntegrationFailure as error:
+        raise HTTPException(502, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.post("/public/platform/payment-methods/authorize")
+async def authorize_public_platform_payment(body: PublicPaymentMethodInput):
+    """Return a deterministic sandbox success for a trial payment method."""
+
+    async with control_session() as db:
+        plan = await db.scalar(
+            select(PlatformPlan).where(
+                PlatformPlan.code == body.plan_code,
+                PlatformPlan.active,
+            )
+        )
+        if plan is None:
+            raise HTTPException(422, "Selected plan is unavailable")
+        if plan.price_cents <= 0:
+            raise HTTPException(422, "This plan requires a sales-assisted subscription")
+    result = await _authorize_public_signup_payment(
+        plan=plan,
+        payment_method_token=body.payment_method_token,
+        idempotency_key=f"payment-method:{uuid4()}",
+        region=body.region,
+    )
+    return {
+        "status": "success",
+        "sandbox": result.sandbox,
+        "payment_status": result.status,
+        "reference": result.reference,
+        "message": "Payment method accepted by the sandbox gateway. No trial charge was made.",
+    }
+
+
+@router.post("/public/platform/onboarding", status_code=201)
+async def public_platform_onboarding(body: PublicPlatformSignup):
+    """Start a secure, isolated trial from Platform Home.
+
+    Public self-onboarding never provisions production integrations. Custom
+    domains, appointment widgets, imports, SSO, and other reviewed capabilities
+    remain Platform Admin assisted actions after the tenant has been created.
+    """
+
+    if not body.trial_terms_accepted or not body.data_processing_acknowledged:
+        raise HTTPException(
+            422,
+            "Accept the secure trial terms and confirm that no PHI will be imported before production activation",
+        )
+    if body.organization_id:
+        raise HTTPException(422, "Public self-onboarding cannot target an existing organization")
+    if body.custom_hostname or body.booking_widget_origin:
+        raise HTTPException(
+            422,
+            "Custom domains and appointment widgets require assisted production activation",
+        )
+
+    async with control_session() as db:
+        plan = await db.scalar(
+            select(PlatformPlan).where(
+                PlatformPlan.code == body.plan_code,
+                PlatformPlan.active,
+            )
+        )
+        if plan is None:
+            raise HTTPException(422, "Selected plan is unavailable")
+        if plan.price_cents <= 0:
+            raise HTTPException(422, "This plan requires a sales-assisted subscription")
+        if plan.trial_days <= 0:
+            raise HTTPException(422, "This plan is not available for secure self-onboarding")
+
+    organization_id = uuid4()
+    payment = await _authorize_public_signup_payment(
+        plan=plan,
+        payment_method_token=body.payment_method_token,
+        idempotency_key=f"signup:{organization_id}",
+        region=body.region,
+    )
+    now = datetime.now(UTC)
+    trial_ends_at = now + timedelta(days=plan.trial_days)
+    subscription_status = "trialing" if plan.trial_days else "active"
+    onboarding_body = Onboarding(
+        organization_id=organization_id,
+        name=body.name,
+        slug=body.slug,
+        region=body.region,
+        location_name=body.location_name,
+        location_address=body.location_address,
+        location_phone=body.location_phone,
+        location_timezone=body.location_timezone,
+        admin_name=body.admin_name,
+        admin_email=body.admin_email,
+        front_office_enabled=body.front_office_enabled,
+        booking_enabled=body.booking_enabled,
+        patient_portal_enabled=body.patient_portal_enabled,
+        booking_widget_origin=None,
+        trial_mode=True,
+        trial_terms_accepted=body.trial_terms_accepted,
+        data_processing_acknowledged=body.data_processing_acknowledged,
+        plan_code=plan.code,
+        subscription_status=subscription_status,
+        trial_ends_at=trial_ends_at if plan.trial_days else None,
+        current_period_start=now,
+        current_period_end=trial_ends_at if plan.trial_days else None,
+        external_reference=payment.reference,
+        custom_domain_hostname=None,
+        custom_domain_surfaces=[],
+    )
+    self_onboarding_actor = PlatformActor(
+        "self-onboarding",
+        body.admin_name,
+        "self-onboarding",
+        "",
+        is_bootstrap_operator=True,
+    )
+    result = await onboarding(onboarding_body, self_onboarding_actor)
+    host_template = settings().tenant_public_url_template
+    managed_url = host_template.format(tenant_slug=result["slug"])
+    return {
+        **result,
+        "plan_code": plan.code,
+        "plan_name": plan.name,
+        "subscription_status": subscription_status,
+        "trial_ends_at": trial_ends_at.isoformat() if plan.trial_days else None,
+        "payment": {
+            "status": payment.status,
+            "sandbox": payment.sandbox,
+            "reference": payment.reference,
+        },
+        "managed_url": managed_url,
+        "secure_trial": {
+            "phi_import_allowed": False,
+            "production_activation_required": True,
+            "custom_domains": "assisted_activation",
+            "widgets": "assisted_activation",
+            "sso_and_integrations": "assisted_activation",
+            "administrator_verification_required": True,
+            "mfa_setup_required": True,
+        },
+        "custom_domain": None,
+        "widget": {
+            "status": "assisted_activation_required",
+            "origin": None,
+        },
+    }
+
+
 # Handle platform billing plans for this module.
 @router.get("/platform/billing/plans")
 async def platform_billing_plans(
@@ -1980,6 +2963,7 @@ async def platform_billing_subscriptions(
                 "account_status": account.account_status,
                 "legacy_plan_code": account.plan_code,
                 "subscription_status": subscription.status if subscription else account.subscription_status,
+                "self_onboarding": (account.commercial_metadata or {}).get("self_onboarding"),
                 "subscription": {
                     "id": subscription.id,
                     "plan": await platform_plan_payload_with_entitlements(db, plan) if plan else None,
@@ -2225,6 +3209,34 @@ async def set_platform_defaults(
         return body.model_dump()
 
 
+# Retrieve platform password policy while applying the existing permission gate.
+@router.get("/platform/settings/password-policy")
+async def get_platform_password_policy(
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap("security.password_policy.read")
+    ),
+):
+    async with control_session() as db:
+        row = await platform_configuration(db)
+        platform_audit(db, actor.user_id, "platform-password-policy.read")
+        return PasswordPolicy(**row.password_policy).model_dump()
+
+
+@router.put("/platform/settings/password-policy")
+async def set_platform_password_policy(
+    body: PasswordPolicy,
+    actor: PlatformActor = Depends(
+        permit_platform_or_bootstrap("security.password_policy.update")
+    ),
+):
+    async with control_session() as db:
+        row = await platform_configuration(db)
+        row.password_policy = body.model_dump()
+        row.updated_by = actor.user_id
+        platform_audit(db, actor.user_id, "platform-password-policy.configure")
+        return row.password_policy
+
+
 # Handle platform communication templates for this module.
 @router.get("/platform/communication-templates")
 async def platform_communication_templates(
@@ -2379,6 +3391,16 @@ async def platform_notifications(
                     else "Review recovery" if "password" in row.kind or "recovery" in row.kind
                     else "View notification"
                 )
+            target_url = payload.get("target_url")
+            # Older password-reset/invitation outbox rows predate the explicit
+            # notification target. Recover the one-time path from the stored
+            # message body so historical bell entries remain actionable.
+            if not target_url:
+                body_text = str(payload.get("body") or "")
+                match = re.search(r"(?:https?://[^\s\"<>]+)?/admin/\?(reset|invite)=([^\s\"<>]+)", body_text)
+                if match:
+                    action, token = match.groups()
+                    target_url = f"/admin/?{action}={quote(token.rstrip('.,);]'), safe='')}"
             items.append({
                 "id": row.id,
                 "kind": row.kind,
@@ -2389,7 +3411,7 @@ async def platform_notifications(
                 "created_at": row.created_at,
                 "unread": status in {"pending", "retry", "failed"},
                 "cta_label": str(cta_label),
-                "target_url": payload.get("target_url"),
+                "target_url": target_url,
             })
         platform_audit(db, actor.user_id, "platform-notifications.read")
         return {
@@ -2691,13 +3713,20 @@ async def set_platform_adapter_default(
             db.add(row)
         else:
             row.provider_name = body.provider_name
+            row.mode = body.mode
             row.active = body.active
             row.updated_by = actor.user_id
         platform_audit(
             db,
             actor.user_id,
             "adapter-default.configure",
-            details={"region": body.region, "capability": body.capability},
+            details={
+                "region": body.region,
+                "capability": body.capability,
+                "provider_name": body.provider_name,
+                "mode": body.mode,
+                "active": body.active,
+            },
         )
         if approval:
             await complete_runtime_action(
@@ -2758,7 +3787,7 @@ async def decide_integration_request(
             else await decide_platform(db, actor.user_id, permission_key)
         )
         if not authorization.allowed or authorization.needs_step_up:
-            raise HTTPException(403, "Permission denied")
+            raise HTTPException(403, {"message": "Permission denied", "required_permissions": [permission_key]})
         runtime_payload = {
             "customization_request_id": request.id,
             "organization_id": request.organization_id,
@@ -2959,7 +3988,7 @@ async def recover_administrator(
     async with control_session() as control_db:
         decision = await decide_platform(control_db, actor.user_id, permission_key)
         if not decision.allowed or decision.needs_step_up:
-            raise HTTPException(403, "Permission denied")
+            raise HTTPException(403, {"message": "Permission denied", "required_permissions": [permission_key]})
         if decision.needs_approval:
             if body.approval_request_id:
                 approval = await authorize_runtime_action(
@@ -3028,6 +4057,7 @@ async def recover_administrator(
                     initiated_by=actor.user_id,
                     reason=body.reason,
                     clinic_name=organization.name,
+                    tenant_slug=organization.slug,
                 )
                 await revoke_staff_sessions(db, user, actor_id=actor.user_id)
                 user.token_version += 1
@@ -3064,6 +4094,10 @@ async def accept_invite(body: AcceptInvite):
         raise HTTPException(429, "Try again later")
     org = await organization_from_login(body.organization_id, body.tenant_slug)
     async with organization_session(org) as db:
+        policy = PasswordPolicy(**(await tenant_settings(db)).policy.get("password_policy", {}))
+        password_error = validate_password(body.password, policy)
+        if password_error:
+            raise HTTPException(422, password_error)
         invitation = await db.scalar(
             select(StaffInvite).where(StaffInvite.token_hash == digest(body.token)).with_for_update()
         )
@@ -3082,9 +4116,19 @@ async def accept_invite(body: AcceptInvite):
                 "is_provider": invitation.is_provider,
                 "location_ids": invitation.location_ids,
                 "password_hash": hash_password(body.password),
+                "password_changed_at": datetime.now(UTC),
             },
             "invitation",
         )
+        primary_role = await db.scalar(
+            select(TenantRole).where(
+                TenantRole.name == pending_assignments[0].role,
+                TenantRole.status == "published",
+            )
+        )
+        if primary_role is not None:
+            user.role = primary_role.name
+            user.role_id = primary_role.id
         invitation.used = True
         invitation.status = "accepted"
         invitation.accepted_at = datetime.now(UTC)
@@ -3105,6 +4149,27 @@ async def accept_invite(body: AcceptInvite):
                 for item in pending_assignments
             ]
         )
+        canonical_roles = []
+        for item in pending_assignments:
+            role = await db.scalar(
+                select(TenantRole).where(
+                    TenantRole.name == item.role,
+                    TenantRole.status == "published",
+                )
+            )
+            if role is None:
+                raise HTTPException(422, "The invited role is no longer available")
+            canonical_roles.append(
+                TenantRoleAssignment(
+                    user_id=user.id,
+                    role_id=role.id,
+                    level="Organization" if item.scope == "organization" else "Location",
+                    location_id=item.location_id,
+                    created_by=user.id,
+                    updated_by=user.id,
+                )
+            )
+        db.add_all(canonical_roles)
         await db.flush()
         await seed_tenant_super_admin(db, user.id, sync_legacy=True)
         for item in pending_assignments:
@@ -3133,7 +4198,14 @@ async def staff_invite(body: InviteInput, db=Depends(db_session), actor=Depends(
         for item in assignments
     ):
         raise HTTPException(403, "Cannot grant access outside your assigned location")
-    return await invite(db, body, actor.user_id, actor.organization.name, tenant_slug=actor.organization.slug)
+    return await invite(
+        db,
+        body,
+        actor.user_id,
+        actor.organization.name,
+        delivery_actor=actor,
+        tenant_slug=actor.organization.slug,
+    )
 
 
 # Handle organization access for this module.
@@ -3243,6 +4315,41 @@ async def organization_access_roles(db=Depends(db_session), actor=Depends(permit
     return result
 
 
+async def canonical_staff_assignments(db, user_id: str) -> list[dict]:
+    """Return published RBAC assignments for a staff member for display."""
+    rows = (
+        await db.execute(
+            select(
+                TenantRoleAssignment.id,
+                TenantRoleAssignment.role_id,
+                TenantRoleAssignment.level,
+                TenantRoleAssignment.location_id,
+                TenantRole.name,
+            )
+            .join(TenantRole, TenantRole.id == TenantRoleAssignment.role_id)
+            .where(
+                TenantRoleAssignment.user_id == user_id,
+                TenantRole.status == "published",
+            )
+            .order_by(
+                TenantRoleAssignment.level,
+                TenantRoleAssignment.location_id,
+                TenantRoleAssignment.id,
+            )
+        )
+    ).all()
+    return [
+        {
+            "id": assignment_id,
+            "role_id": role_id,
+            "scope": level.lower(),
+            "location_id": location_id,
+            "role": role_name,
+        }
+        for assignment_id, role_id, level, location_id, role_name in rows
+    ]
+
+
 # Handle organization access query for this module.
 @router.get("/organization/access/query")
 async def organization_access_query(
@@ -3287,12 +4394,6 @@ async def organization_access_query(
                     TenantRoleAssignment.user_id == StaffUser.id,
                     TenantRoleAssignment.role_id == role_row.id,
                 )
-                if role_row.id != "tenant-super-admin":
-                    super_admin_assignment = select(TenantRoleAssignment.id).where(
-                        TenantRoleAssignment.user_id == StaffUser.id,
-                        TenantRoleAssignment.role_id == "tenant-super-admin",
-                    ).exists()
-                    assignment_filter = assignment_filter.where(~super_admin_assignment)
                 if actor.assignment_scope != "organization":
                     assignment_filter = assignment_filter.where(
                         TenantRoleAssignment.location_id.in_(actor.location_ids)
@@ -3326,23 +4427,41 @@ async def organization_access_query(
         items = []
         for row in rows:
             assignments = await user_assignments(db, row)
+            display_assignments = await canonical_staff_assignments(db, row.id)
+            if not display_assignments:
+                display_assignments = [
+                    {
+                        "id": item.id,
+                        "scope": item.scope,
+                        "location_id": item.location_id,
+                        "role": item.role,
+                    }
+                    for item in assignments
+                ]
+            primary_display = next(
+                (
+                    item
+                    for item in display_assignments
+                    if item.get("role_id") == row.role_id
+                ),
+                next(
+                    (
+                        item
+                        for item in display_assignments
+                        if item.get("role") == "Tenant Super Admin"
+                    ),
+                    display_assignments[0] if display_assignments else None,
+                ),
+            )
             items.append(
                 {
                     "id": row.id,
                     "name": row.name,
                     "email": row.email,
-                    "role": row.role,
+                    "role": primary_display["role"] if primary_display else row.role,
                     "is_provider": row.is_provider,
                     "location_ids": row.location_ids,
-                    "assignments": [
-                        {
-                            "id": item.id,
-                            "scope": item.scope,
-                            "location_id": item.location_id,
-                            "role": item.role,
-                        }
-                        for item in assignments
-                    ],
+                    "assignments": display_assignments,
                     "mfa_enabled": row.mfa_enabled,
                     "active": row.active,
                     "suspended_until": row.suspended_until,
@@ -3582,6 +4701,7 @@ async def reset_staff_password(
         initiated_by=actor.user_id,
         reason=body.reason,
         clinic_name=actor.organization.name,
+        tenant_slug=actor.organization.slug,
     )
     await revoke_staff_sessions(db, user, actor_id=actor.user_id)
     user.token_version += 1
@@ -3621,15 +4741,101 @@ async def restore_staff(identifier: str, db=Depends(db_session), actor=Depends(p
     return await _change_staff_lifecycle(identifier, db, actor, archived=False)
 
 
+async def _discount_permission_allowed(request: Request, db, actor: Actor, permission_key: str) -> bool:
+    """Evaluate a granular discount permission while preserving the settings route."""
+    decision = await decide_tenant(
+        db,
+        actor.user_id,
+        permission_key,
+        selected_location_id=actor.selected_location_id,
+        current_ip=request.client.host if request.client else None,
+    )
+    return decision.allowed and not decision.needs_step_up and not decision.needs_approval
+
+
+async def _password_policy_permission_allowed(
+    request: Request, db, actor: Actor, permission_key: str
+) -> bool:
+    """Evaluate granular password-policy access without widening settings access."""
+    decision = await decide_tenant(
+        db,
+        actor.user_id,
+        permission_key,
+        selected_location_id=actor.selected_location_id,
+        current_ip=request.client.host if request.client else None,
+    )
+    return decision.allowed and not decision.needs_step_up and not decision.needs_approval
+
+
+async def _require_discount_permissions(
+    request: Request,
+    db,
+    actor: Actor,
+    permission_keys: set[str],
+) -> None:
+    """Reject discount policy changes unless every required action is granted."""
+    missing = [
+        key
+        for key in sorted(permission_keys)
+        if not await _discount_permission_allowed(request, db, actor, key)
+    ]
+    if missing:
+        raise HTTPException(403, {"message": "Discount policy permission required", "required_permissions": missing})
+
+
 # Retrieve get settings for the current request or workflow.
 @router.get("/organization/settings")
-async def get_settings(db=Depends(db_session), actor=Depends(permit("settings"))):
+async def get_settings(request: Request, db=Depends(db_session), actor=Depends(permit("settings"))):
     row = await tenant_settings(db)
+    widget_entitlement = (await resolve_entitlements(actor.organization.id)).get("module.appointment_widget")
+    policy = Policy(**row.policy).model_dump()
+    if not await _discount_permission_allowed(request, db, actor, "billing.discount.read"):
+        policy["discounts"] = []
+    if not await _password_policy_permission_allowed(
+        request, db, actor, "security.password_policy.read"
+    ):
+        # Keep the existing settings DTO shape for clients that render the
+        # settings form, while withholding the tenant's configured policy.
+        policy["password_policy"] = PasswordPolicy().model_dump()
+    widget_settings = {
+        "mode": "button",
+        "accent_color": "#356b5d",
+        "text_color": "#14231c",
+        "background_color": "#f3f6f4",
+        "surface_color": "#ffffff",
+        "border_color": "#d8e3de",
+        "font_family": "inherit",
+        "font_url": "",
+        "button_label": "Book an appointment",
+        "title": "Book an appointment",
+        "description": "Choose a time that works for you.",
+        "success_message": "Your appointment request has been received.",
+        "button_width": "auto",
+        "button_height": 48,
+        "button_radius": 8,
+        "button_font_size": 16,
+        "button_font_weight": "700",
+        "panel_width": 680,
+        "panel_radius": 14,
+        "panel_padding": 20,
+        "default_location_id": "",
+        "allowed_location_ids": [],
+        "allowed_service_ids": [],
+        "allowed_provider_ids": [],
+        "allowed_origins": [],
+        **(row.booking_widget or {}),
+    }
+
+    widget_settings["origin_verifications"] = [
+        _public_origin_verification(item) for item in (row.booking_widget or {}).get("origin_verifications") or []
+    ]
+    widget_settings["approval_request"] = _widget_request_record(row.booking_widget)
+    widget_settings["entitled"] = bool(widget_entitlement and widget_entitlement.get("enabled"))
     return {
         "visibility": row.visibility,
         "branding": row.branding,
         "logo_url": row.logo_url or DEFAULT_LOGO_URL,
-        "policy": Policy(**row.policy).model_dump(),
+        "policy": policy,
         "effective_adapters": actor.adapter_names,
         "jurisdiction_policy": row.jurisdiction_policy,
         "jurisdiction": jurisdiction(actor.organization.region).defaults(row.jurisdiction_policy),
@@ -3640,16 +4846,277 @@ async def get_settings(db=Depends(db_session), actor=Depends(permit("settings"))
             **row.public_content,
         },
         "operational_thresholds": row.operational_thresholds,
-        "booking_widget": {
-            "accent_color": "#356b5d",
-            "default_location_id": "",
-            "allowed_location_ids": [],
-            "allowed_service_ids": [],
-            "allowed_provider_ids": [],
-            "allowed_origins": [],
-            **row.booking_widget,
-        },
+        "booking_widget": widget_settings,
     }
+
+
+@router.get("/organization/booking-widget/embed")
+async def booking_widget_embed(request: Request, db=Depends(db_session), actor=Depends(permit("settings"))):
+    """Return a copyable, origin-independent embed snippet for the saved mode.
+
+    The script is served by the API origin rather than the tenant-web app. This
+    lets tenants embed it in an independently hosted website while the API
+    continues to enforce entitlement and verified-origin checks.
+    """
+    runtime = await tenant_settings(db)
+    config = runtime.booking_widget or {}
+    approval = _widget_request_record(config)
+    organization_id = actor.organization.id
+    mode = config.get("mode", "button")
+    api_origin = str(request.base_url).rstrip("/")
+    script_url = f"{api_origin}/widgets/appointments.js"
+    api_base = f"{api_origin}/v1/widgets/appointments"
+    script_attrs = f'data-api-base="{api_base}" data-organization-id="{organization_id}"'
+    if mode == "div":
+        snippet = (
+            '<div id="dhmis-booking-widget"></div>\n'
+            f'<script src="{script_url}" {script_attrs} '
+            'data-target="#dhmis-booking-widget" data-mode="div"></script>'
+        )
+    elif mode == "iframe":
+        snippet = f'<script src="{script_url}" {script_attrs} data-mode="iframe"></script>'
+    else:
+        snippet = f'<script src="{script_url}" {script_attrs} data-mode="button"></script>'
+    return {
+        "mode": mode,
+        "organization_id": organization_id,
+        "script_url": script_url,
+        "api_base": api_base,
+        "snippet": snippet if approval.get("status") == "approved" else "",
+        "approval_status": approval.get("status"),
+        "updated_at": runtime.updated_at.isoformat() if runtime.updated_at else None,
+    }
+
+
+def _public_origin_verification(item: dict) -> dict:
+    method = item.get("verification_method", "dns")
+    return {
+        "origin": item.get("origin", ""),
+        "dns_name": item.get("dns_name", ""),
+        "record_type": "ADMIN" if method == "admin" else ("HTTP" if method == "http" else "TXT"),
+        "record_value": "" if method == "admin" else (item.get("token", "") if method == "http" else (f"dhmis-widget={item.get('token', '')}" if item.get("token") else "")),
+        "verification_url": item.get("verification_url"),
+        "verified_at": item.get("verified_at"),
+        "verified_by": item.get("verified_by"),
+    }
+
+
+@router.get("/organization/booking-widget/origins")
+async def list_booking_widget_origins(db=Depends(db_session), actor=Depends(permit("settings"))):
+    config = (await tenant_settings(db)).booking_widget or {}
+    return {"items": [_public_origin_verification(item) for item in config.get("origin_verifications") or []]}
+
+
+@router.post("/organization/booking-widget/request", status_code=201)
+async def request_booking_widget(
+    body: BookingWidgetOriginInput,
+    db=Depends(db_session),
+    actor=Depends(permit("settings")),
+):
+    """Request widget activation and origin approval after purchasing the add-on."""
+    entitlement = (await resolve_entitlements(actor.organization.id)).get("module.appointment_widget")
+    if not entitlement or not entitlement.get("enabled"):
+        raise HTTPException(402, "Purchase or enable the appointment widget add-on before requesting approval")
+    try:
+        origin = normalize_widget_origin(body.origin)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    runtime = await tenant_settings(db)
+    current = runtime.booking_widget or {}
+    approval = _widget_request_record(current)
+    current_origin = approval.get("origin", "")
+    current_status = approval.get("status")
+    prior_approved_origin = approval.get("previous_origin") or (current_origin if current_status == "approved" else "")
+    if current_status == "approved" and origin == current_origin:
+        return {"status": "approved", "origin": current_origin}
+    if current_status == "pending":
+        if origin == approval.get("origin"):
+            return {
+                "status": "pending",
+                "origin": approval.get("origin", ""),
+                "requested_at": approval.get("requested_at"),
+            }
+        raise HTTPException(409, "A widget domain request is already awaiting platform approval")
+    is_domain_change = (current_status == "approved" and origin != current_origin) or (
+        current_status == "rejected" and approval.get("request_type") == "domain_change"
+    )
+    now = datetime.now(UTC).isoformat()
+    records = list(current.get("origin_verifications") or [])
+    record = next((item for item in records if item.get("origin") == origin), None)
+    if record is None:
+        record = _widget_origin_record(origin)
+        records.append(record)
+    booking_widget = {
+        **current,
+        "approval_request": {
+            "status": "pending",
+            "origin": origin,
+            "requested_at": now,
+            "approved_at": None,
+            "approved_by": None,
+            "rejection_reason": "",
+            "request_type": "domain_change" if is_domain_change else "initial",
+            "previous_origin": prior_approved_origin if is_domain_change else None,
+        },
+        # Keep the previous origin as history, but remove every allowed origin
+        # while the replacement is being reviewed. This immediately disables
+        # the existing embed until the platform approves the new origin.
+        "origin_verifications": records,
+        "allowed_origins": [],
+    }
+    await configure_tenant(db, actor_id=actor.user_id, booking_widget=booking_widget)
+    audit_action = "booking-widget.domain-change.request" if is_domain_change else "booking-widget.request"
+    audit(
+        db,
+        actor.user_id,
+        audit_action,
+        "organization",
+        actor.organization.id,
+        origin=origin,
+        previous_origin=prior_approved_origin if is_domain_change else None,
+        request_type="domain_change" if is_domain_change else "initial",
+    )
+    # The notification uses the same database transaction as the tenant
+    # settings update. A failed request therefore cannot leave a stale task
+    # in the platform bell.
+    commercial = await _commercial_summary(db, actor.organization.id, actor.organization.plan)
+    platform_audit(
+        db,
+        actor.user_id,
+        "organization.booking-widget.domain-change.request" if is_domain_change else "organization.booking-widget.request",
+        organization_id=actor.organization.id,
+        details={
+            "origin": origin,
+            "previous_origin": prior_approved_origin if is_domain_change else None,
+            "request_type": "domain_change" if is_domain_change else "initial",
+            "plan_code": commercial["plan_code"],
+            "plan_name": commercial["plan_name"],
+            "subscription_status": commercial["subscription_status"],
+        },
+    )
+    enqueue_platform_notification(
+        db,
+        kind="booking-widget.requested",
+        reference_id=f"{actor.organization.id}:{now}",
+        actor_id=actor.user_id,
+        payload={
+            "organization_id": actor.organization.id,
+            "organization_name": actor.organization.name,
+            "slug": actor.organization.slug,
+            "origin": origin,
+            "plan_code": commercial["plan_code"],
+            "plan_name": commercial["plan_name"],
+            "subscription_status": commercial["subscription_status"],
+            "detail": (
+                f"{actor.organization.name} requested a widget domain change from {prior_approved_origin} to {origin}; "
+                "the existing widget is disabled until approval"
+                if is_domain_change
+                else f"{actor.organization.name} requested widget approval for {origin}"
+            ) + f" · {commercial['plan_name'] or commercial['plan_code'] or 'No plan'} · {commercial['subscription_status'] or 'No subscription'}",
+            "cta_label": "Review widget request",
+            "target_url": "/admin/onboarding/",
+        },
+    )
+    return {
+        "status": "pending",
+        "origin": origin,
+        "requested_at": now,
+        "request_type": "domain_change" if is_domain_change else "initial",
+        "previous_origin": prior_approved_origin if is_domain_change else None,
+    }
+
+
+@router.post("/organization/booking-widget/origins", status_code=201)
+async def request_booking_widget_origin(
+    body: BookingWidgetOriginInput,
+    db=Depends(db_session),
+    actor=Depends(permit("settings")),
+):
+    try:
+        origin = normalize_widget_origin(body.origin)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    runtime = await tenant_settings(db)
+    approval = _widget_request_record(runtime.booking_widget)
+    if approval.get("status") != "approved":
+        raise HTTPException(409, "The appointment widget must be approved before adding website origins")
+    approved_origin = approval.get("origin", "")
+    if origin != approved_origin:
+        raise HTTPException(409, "This widget is locked to its approved website origin")
+    record = next(
+        (item for item in (runtime.booking_widget or {}).get("origin_verifications") or [] if item.get("origin") == approved_origin),
+        None,
+    )
+    if record is None:
+        raise HTTPException(409, "The approved widget origin is missing")
+    return _public_origin_verification(record) | {"status": "approved" if record.get("verified_at") else "pending"}
+
+
+@router.post("/organization/booking-widget/origins/verify")
+async def verify_booking_widget_origin(
+    body: BookingWidgetOriginInput,
+    db=Depends(db_session),
+    actor=Depends(permit("settings")),
+):
+    try:
+        origin = normalize_widget_origin(body.origin)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    runtime = await tenant_settings(db)
+    if _widget_request_record(runtime.booking_widget).get("status") != "approved":
+        raise HTTPException(409, "The appointment widget must be approved before verifying website origins")
+    records = list((runtime.booking_widget or {}).get("origin_verifications") or [])
+    record = next((item for item in records if item.get("origin") == origin), None)
+    if not record:
+        raise HTTPException(404, "Widget origin has not been registered")
+    if not record.get("verified_at"):
+        try:
+            async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+                if record.get("verification_method") == "http":
+                    response = await client.get(record["verification_url"])
+                    response.raise_for_status()
+                    found = response.text.strip() == record["token"]
+                else:
+                    response = await client.get("https://dns.google/resolve", params={"name": record["dns_name"], "type": "TXT"})
+                    response.raise_for_status()
+                    answers = response.json().get("Answer") or []
+                    expected = f'"dhmis-widget={record["token"]}"'
+                    found = any(expected in str(answer.get("data", "")) for answer in answers)
+            if not found:
+                if record.get("verification_method") == "http":
+                    raise HTTPException(409, {"message": "The HTTP verification token was not found", "verification_url": record["verification_url"], "record_value": record["token"]})
+                raise HTTPException(409, {"message": "DNS TXT record was not found", "dns_name": record["dns_name"], "record_value": f"dhmis-widget={record['token']}"})
+        except HTTPException:
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(502, "DNS verification service is unavailable") from exc
+        record["verified_at"] = datetime.now(UTC).isoformat()
+        record["verified_by"] = actor.user_id
+    booking_widget = {**(runtime.booking_widget or {}), "origin_verifications": records, "allowed_origins": [item["origin"] for item in records if item.get("verified_at")]}
+    await configure_tenant(db, actor_id=actor.user_id, booking_widget=booking_widget)
+    audit(db, actor.user_id, "booking-widget.origin.verify", "organization", actor.organization.id, origin=origin)
+    return _public_origin_verification(record) | {"status": "verified"}
+
+
+@router.delete("/organization/booking-widget/origins")
+async def remove_booking_widget_origin(
+    body: BookingWidgetOriginInput,
+    db=Depends(db_session),
+    actor=Depends(permit("settings")),
+):
+    try:
+        origin = normalize_widget_origin(body.origin)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    runtime = await tenant_settings(db)
+    approval = _widget_request_record(runtime.booking_widget)
+    if approval.get("status") == "approved" and origin == approval.get("origin"):
+        raise HTTPException(409, "The approved widget origin is locked and cannot be removed")
+    records = [item for item in (runtime.booking_widget or {}).get("origin_verifications") or [] if item.get("origin") != origin]
+    booking_widget = {**(runtime.booking_widget or {}), "origin_verifications": records, "allowed_origins": [item["origin"] for item in records if item.get("verified_at")]}
+    await configure_tenant(db, actor_id=actor.user_id, booking_widget=booking_widget)
+    audit(db, actor.user_id, "booking-widget.origin.remove", "organization", actor.organization.id, origin=origin)
+    return {"status": "removed", "origin": origin}
 
 
 # Retrieve get provider options for the current request or workflow.
@@ -3719,7 +5186,52 @@ async def request_integration_customization(
 
 # Update set settings while preserving existing validation and audit behavior.
 @router.put("/organization/settings")
-async def set_settings(body: OrgSettings, db=Depends(db_session), actor=Depends(permit("settings"))):
+async def set_settings(request: Request, body: OrgSettings, db=Depends(db_session), actor=Depends(permit("settings"))):
+    current = await tenant_settings(db)
+    current_discounts = {
+        item.get("id"): item
+        for item in (current.policy or {}).get("discounts", [])
+        if item.get("id")
+    }
+    can_read_discounts = await _discount_permission_allowed(request, db, actor, "billing.discount.read")
+    requested_discounts = {item.id: item.model_dump() for item in body.policy.discounts}
+    # A user who cannot read discounts receives an empty projection from GET
+    # settings. Preserve the stored definitions when they save an unrelated
+    # practice setting instead of interpreting that projection as deletion.
+    if current_discounts and not can_read_discounts and not requested_discounts:
+        requested_discounts = current_discounts
+    required_discount_permissions: set[str] = set()
+    for identifier, item in requested_discounts.items():
+        if identifier not in current_discounts:
+            required_discount_permissions.add("billing.discount.create")
+        elif item != current_discounts[identifier]:
+            required_discount_permissions.add("billing.discount.update")
+    if set(current_discounts) - set(requested_discounts):
+        required_discount_permissions.add("billing.discount.archive")
+    if required_discount_permissions:
+        await _require_discount_permissions(request, db, actor, required_discount_permissions)
+    current_password_policy = PasswordPolicy(
+        **(current.policy or {}).get("password_policy", {})
+    ).model_dump()
+    requested_password_policy = body.policy.password_policy.model_dump()
+    can_read_password_policy = await _password_policy_permission_allowed(
+        request, db, actor, "security.password_policy.read"
+    )
+    if can_read_password_policy:
+        if requested_password_policy != current_password_policy and not await _password_policy_permission_allowed(
+            request, db, actor, "security.password_policy.update"
+        ):
+            raise HTTPException(
+                403,
+                {
+                    "message": "Password policy update permission required",
+                    "required_permissions": ["security.password_policy.update"],
+                },
+            )
+    else:
+        # Users who cannot read password policy must not be able to overwrite
+        # it through the broader organization-settings payload.
+        body.policy.password_policy = PasswordPolicy(**current_password_policy)
     if body.booking_widget and body.booking_widget.default_location_id:
         await required(db, Location, body.booking_widget.default_location_id)
     for identifier in body.booking_widget.allowed_location_ids if body.booking_widget else []:
@@ -3738,9 +5250,48 @@ async def set_settings(body: OrgSettings, db=Depends(db_session), actor=Depends(
             or not await user_has_module(db, provider, "clinical")
         ):
             raise HTTPException(422, "Widget providers must be active, explicitly enabled clinical providers")
-    await configure_tenant(db, actor_id=actor.user_id, **body.model_dump())
+    if body.booking_widget:
+        current_widget = current.booking_widget or {}
+        current_approval_request = current_widget.get("approval_request")
+        widget_status = _widget_request_record(current_widget).get("status")
+        requested_widget = body.booking_widget.model_dump()
+        if widget_status != "approved":
+            changed_widget_keys = [
+                key for key, value in requested_widget.items()
+                if value != current_widget.get(key, BookingWidgetConfiguration().model_dump().get(key))
+                and key not in {"allowed_origins", "origin_verifications"}
+            ]
+            if changed_widget_keys:
+                raise HTTPException(409, "The appointment widget must be approved before its styling can be changed")
+        verification_records = list(current_widget.get("origin_verifications") or [])
+        verified_origins = [
+            str(item.get("origin"))
+            for item in verification_records
+            if isinstance(item, dict) and item.get("origin") and item.get("verified_at")
+        ]
+        requested_origins = [normalize_widget_origin(value) for value in body.booking_widget.allowed_origins]
+        if verification_records:
+            # Origin access is granted only by the DNS verification workflow;
+            # saving the broader settings form cannot bypass that control.
+            requested_origins = verified_origins
+        body.booking_widget.allowed_origins = list(dict.fromkeys(requested_origins))
+        body.booking_widget.origin_verifications = verification_records
+    payload = body.model_dump()
+    if body.booking_widget and current_approval_request is not None:
+        # Approval is owned by the platform workflow, so tenant settings saves
+        # must carry it forward rather than allowing a form DTO to clear it.
+        payload["booking_widget"]["approval_request"] = current_approval_request
+        if _widget_request_record(current_widget).get("status") == "approved":
+            # The approved origin is part of the entitlement grant. Styling
+            # saves may change presentation fields, but cannot widen, replace,
+            # or remove the origin bound to this widget.
+            payload["booking_widget"]["origin_verifications"] = list(current_widget.get("origin_verifications") or [])
+            payload["booking_widget"]["allowed_origins"] = list(current_widget.get("allowed_origins") or [])
+    if current_discounts and not can_read_discounts and not body.policy.discounts:
+        payload["policy"]["discounts"] = list(current_discounts.values())
+    await configure_tenant(db, actor_id=actor.user_id, **payload)
     audit(db, actor.user_id, "configure", "organization", actor.organization.id)
-    return body.model_dump()
+    return payload
 
 
 # Handle communication templates for this module.
@@ -3928,7 +5479,34 @@ async def staff_access(
                 "to": None,
             }
         )
+    # Keep the canonical RBAC assignment projection in step with the legacy
+    # access rows used by older request paths.  Access queries and effective
+    # permission evaluation read the canonical role IDs, while the legacy
+    # rows remain the compatibility source for session location selection.
+    await db.execute(delete(TenantRoleAssignment).where(TenantRoleAssignment.user_id == user.id))
+    primary_role_id = None
+    for item in requested:
+        role = await db.scalar(
+            select(TenantRole).where(
+                TenantRole.name == item.role,
+                TenantRole.status == "published",
+            )
+        )
+        if role is None:
+            raise HTTPException(422, "Unknown role")
+        primary_role_id = primary_role_id or role.id
+        db.add(
+            TenantRoleAssignment(
+                user_id=user.id,
+                role_id=role.id,
+                level="Organization" if item.scope == "organization" else "Location",
+                location_id=item.location_id,
+                created_by=actor.user_id,
+                updated_by=actor.user_id,
+            )
+        )
     user.role = requested[0].role
+    user.role_id = primary_role_id
     user.active = body.active
     if body.is_provider is not None:
         user.is_provider = body.is_provider

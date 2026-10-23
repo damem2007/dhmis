@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 
 from app.core.audit import audit
 from app.core.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
@@ -32,13 +32,8 @@ async def threads(db=Depends(db_session), actor=Depends(permit("messaging.messag
 @router.get("/patients")
 async def message_patients(db=Depends(db_session), actor=Depends(permit("messaging.message_thread.read"))):
     """Return active patients available to a messaging user, including location ids for grouped selection."""
-    rows = (
-        await db.scalars(
-            select(Patient)
-            .where(Patient.archived_at.is_(None))
-            .order_by(Patient.last_name, Patient.first_name)
-        )
-    ).all()
+    rows = (await db.scalars(select(Patient).where(Patient.archived_at.is_(None)))).all()
+    rows = sorted(rows, key=lambda row: (row.last_name.casefold(), row.first_name.casefold(), row.id))
     audit(db, actor.user_id, "read", "patients", count=len(rows), purpose="messaging")
     return [serialize(row) for row in rows]
 
@@ -69,18 +64,23 @@ async def thread_page(
             query = query.where(MessageThread.status == status)
     if patient_id:
         query = query.where(MessageThread.patient_id == patient_id)
-    if search:
-        pattern = f"%{search.strip()}%"
-        query = query.where(or_(MessageThread.subject.ilike(pattern), Patient.first_name.ilike(pattern), Patient.last_name.ilike(pattern)))
-    total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    rows = (
-        await db.execute(
-            query.add_columns(latest_sender.label("latest_sender_type"))
-            .order_by(MessageThread.updated_at.desc(), MessageThread.id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-    ).all()
+    rows = (await db.execute(query.add_columns(latest_sender.label("latest_sender_type")))).all()
+    patients_by_id = {
+        row.id: row
+        for row in (await db.scalars(select(Patient).where(Patient.id.in_([thread.patient_id for thread, _ in rows])))).all()
+    }
+    needle = search.strip().casefold()
+    if needle:
+        rows = [
+            (thread, latest_sender_type)
+            for thread, latest_sender_type in rows
+            if needle in thread.subject.casefold()
+            or needle in patients_by_id[thread.patient_id].first_name.casefold()
+            or needle in patients_by_id[thread.patient_id].last_name.casefold()
+        ]
+    rows.sort(key=lambda item: (item[0].updated_at, item[0].id), reverse=True)
+    total = len(rows)
+    rows = rows[(page - 1) * page_size : page * page_size]
     new_count = await db.scalar(
         select(func.count())
         .select_from(MessageThread)

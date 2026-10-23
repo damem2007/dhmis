@@ -19,6 +19,15 @@ class PaymentRequest(BaseModel):
     payment_method_token: str | None = None
 
 
+class PlatformPaymentRequest(BaseModel):
+    """Payment-method authorization used by public platform sign-up."""
+
+    idempotency_key: str
+    amount_cents: int = Field(gt=0)
+    currency: str = Field(pattern="^[A-Z]{3}$")
+    payment_method_token: str = Field(min_length=1, max_length=200)
+
+
 # Defines the message request model, contract, or value object.
 class MessageRequest(BaseModel):
     idempotency_key: str

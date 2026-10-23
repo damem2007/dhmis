@@ -9,12 +9,14 @@ from app.billing.models import Invoice, Service
 from app.cms.services import default_content, published_revision
 from app.consents.models import Consent
 from app.core.audit import audit
+from app.core.money import format_cents
 from app.core.repository import serialize
 from app.forms.models import FormSubmission, FormTemplate
 from app.identity.models import StaffUser
 from app.identity.service import role_names_with_module
 from app.messaging.models import MessageThread
 from app.organizations.models import Location
+from app.organizations.jurisdiction import jurisdiction
 from app.patient_identity.service import (
     PatientActor,
     authorized_patient_ids,
@@ -23,6 +25,7 @@ from app.patient_identity.service import (
 )
 from app.patients.models import Patient
 from app.scheduling.models import Appointment
+from app.scheduling.presentation import effective_status
 
 router = APIRouter()
 
@@ -118,9 +121,10 @@ async def recent_activity(
         {
             "id": row.id,
             "kind": "appointment",
-            "title": f"Appointment {row.status}",
+            "title": f"Appointment {effective_status(row)}",
             "detail": row.procedure,
             "occurred_at": row.updated_at,
+            "timezone": row.timezone or "UTC",
             "target": "book",
         }
         for row in appointments
@@ -188,15 +192,19 @@ async def notifications(actor: PatientActor = Depends(current_patient), db=Depen
         )
     ).all()
     for row in appointments:
-        status = (row.status or "").lower()
+        status = effective_status(row).lower()
+        timezone_name = row.timezone or "UTC"
+        from zoneinfo import ZoneInfo
+
+        local_start = row.starts_at.astimezone(ZoneInfo(timezone_name))
         if status in {"missed", "no-show", "no_show"}:
             title = "Missed appointment"
-            detail = f"{row.procedure} · {row.starts_at.astimezone().strftime('%b %-d, %Y at %-I:%M %p')}"
+            detail = f"{row.procedure} · {local_start.strftime('%b %-d, %Y at %-I:%M %p')} ({timezone_name})"
             occurred_at = row.updated_at
             kind = "appointment-missed"
         elif status == "confirmed" and row.starts_at >= now:
             title = "Appointment reminder"
-            detail = f"{row.procedure} · {row.starts_at.astimezone().strftime('%b %-d, %Y at %-I:%M %p')}"
+            detail = f"{row.procedure} · {local_start.strftime('%b %-d, %Y at %-I:%M %p')} ({timezone_name})"
             occurred_at = row.starts_at
             kind = "appointment-reminder"
         else:
@@ -213,7 +221,7 @@ async def notifications(actor: PatientActor = Depends(current_patient), db=Depen
     for row in invoices:
         balance = max(0, row.total_cents + row.adjustment_cents - row.paid_cents)
         if balance:
-            items.append({"id": f"invoice:{row.id}:{row.updated_at.isoformat()}:due", "kind": "billing-due", "title": "Due bill", "detail": f"{balance / 100:.2f} due", "occurred_at": row.updated_at, "target": "billing"})
+            items.append({"id": f"invoice:{row.id}:{row.updated_at.isoformat()}:due", "kind": "billing-due", "title": "Due bill", "detail": f"{format_cents(balance, jurisdiction(actor.organization.region).currency)} due", "occurred_at": row.updated_at, "target": "billing"})
 
     submissions = (
         await db.scalars(
@@ -262,5 +270,3 @@ async def profiles(actor: PatientActor = Depends(current_patient), db=Depends(pa
     rows = (await db.scalars(select(Patient).where(Patient.id.in_(identifiers)))).all()
     audit(db, actor.user_id, "portal.read", "patients", actor.patient_id, profile_count=len(rows))
     return [serialize(row) for row in rows]
-
-

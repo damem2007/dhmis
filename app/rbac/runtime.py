@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 
+from app.identity.models import StaffLocationAssignment
+from app.rbac.bootstrap import (
+    ensure_platform_super_admin_grants,
+    ensure_tenant_super_admin_grants,
+)
 from app.rbac.models import (
     PlatformFourEyesRule,
     PlatformRole,
@@ -171,6 +177,10 @@ def _context(domain: Domain, role_rows, grant_rows, rule_rows=None, sod_rows=Non
 
 # Handle tenant policy context for this module.
 async def tenant_policy_context(db) -> PolicyContext:
+    # Keep the protected role current for tenants provisioned before a new
+    # approved permission was added. The sync is idempotent per session and
+    # only inserts missing canonical grants.
+    await ensure_tenant_super_admin_grants(db)
     roles = (await db.scalars(select(TenantRole))).all()
     grants = (await db.scalars(select(TenantRoleGrant))).all()
     rules = (await db.scalars(select(TenantFourEyesRule))).all()
@@ -180,6 +190,9 @@ async def tenant_policy_context(db) -> PolicyContext:
 
 # Handle platform policy context for this module.
 async def platform_policy_context(db) -> PolicyContext:
+    # Keep the protected platform role current for existing control planes
+    # when a new approved permission is added between migrations.
+    await ensure_platform_super_admin_grants(db)
     roles = (await db.scalars(select(PlatformRole))).all()
     grants = (await db.scalars(select(PlatformRoleGrant))).all()
     rules = (await db.scalars(select(PlatformFourEyesRule))).all()
@@ -206,6 +219,55 @@ async def tenant_assignments(
 ) -> list[Assignment]:
     query = select(TenantRoleAssignment).where(TenantRoleAssignment.user_id == user_id)
     rows = (await db.scalars(query)).all()
+    # Older tenants can still have only the legacy staff-location projection.
+    # Keep those users on the same canonical policy path until their role and
+    # assignment rows are reconciled. This fallback is intentionally used only
+    # when there are no canonical assignments, so it cannot add a second source
+    # of access alongside an explicit role assignment.
+    if not rows:
+        legacy_rows = (
+            await db.scalars(
+                select(StaffLocationAssignment).where(
+                    StaffLocationAssignment.user_id == user_id,
+                    StaffLocationAssignment.active,
+                )
+            )
+        ).all()
+        if legacy_rows:
+            role_rows = (await db.scalars(select(TenantRole))).all()
+            roles_by_identifier = {
+                identifier: role
+                for role in role_rows
+                for identifier in (role.id, role.name.casefold())
+                if role.status == "published"
+            }
+            assignments: list[Assignment] = []
+            for legacy in legacy_rows:
+                role = roles_by_identifier.get(legacy.role) or roles_by_identifier.get(
+                    str(legacy.role).casefold()
+                )
+                scope = str(legacy.scope).casefold()
+                if role is None or scope not in {"organization", "location"}:
+                    continue
+                if (
+                    scope != "organization"
+                    and selected_location_id is not None
+                    and legacy.location_id != selected_location_id
+                ):
+                    continue
+                assignments.append(
+                    Assignment(
+                        user_id=user_id,
+                        role_id=role.id,
+                        level=(
+                            Scope.ORGANIZATION
+                            if scope == "organization"
+                            else Scope.LOCATION
+                        ),
+                        location_id=legacy.location_id,
+                    )
+                )
+            return assignments
     return [
         _assignment(row)
         for row in rows
@@ -239,13 +301,21 @@ async def decide_tenant(
 ) -> Decision:
     context = await tenant_policy_context(db)
     assignments = await tenant_assignments(db, user_id, selected_location_id)
-    return decide(
+    decision = decide(
         permission_key,
         assignments,
         context,
         mfa_age_minutes=mfa_age_minutes,
         current_ip=current_ip,
     )
+    # Tenant Super Admin is the tenant's policy owner. Their approved grants
+    # still control whether an action is allowed, but four-eyes maker-checker
+    # does not create a second approval loop for that role.
+    if decision.allowed and any(
+        assignment.role_id == "tenant-super-admin" for assignment in assignments
+    ):
+        return replace(decision, needs_approval=False)
+    return decision
 
 
 # Handle decide platform for this module.

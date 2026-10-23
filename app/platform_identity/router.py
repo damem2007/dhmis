@@ -2,6 +2,7 @@ import base64
 import hmac
 import secrets
 import time
+from datetime import UTC, datetime
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -13,11 +14,19 @@ from app.core.config import settings
 from app.core.database import control_session
 from app.core.rate_limit import get_bo_throttle_args
 from app.identity.passwords import hash_password, verify_password
+from app.identity.password_policy import (
+    effective_password_policy,
+    password_expired,
+    password_expiry_at,
+    password_expiry_days_remaining,
+    validate_password,
+)
 from app.identity.router import DUMMY_HASH, throttle
 from app.identity.security import digest, vault, verify_totp
 from app.platform_identity.models import (
     PlatformChallenge,
     PlatformInvite,
+    PlatformOutboxMessage,
     PlatformPasswordResetChallenge,
     PlatformSession,
     PlatformUser,
@@ -30,8 +39,12 @@ from app.platform_identity.service import (
     issue_platform_token,
     platform_audit,
 )
+from app.platform_identity.delivery import enqueue_platform_email
+from app.organizations.configuration import platform_configuration
 from app.rbac.bootstrap import seed_platform_super_admin
 from app.rbac.models import PlatformRole, PlatformRoleAssignment
+from app.rbac.policy import Domain, decide
+from app.rbac.runtime import approved_permissions, platform_assignments, platform_policy_context
 
 router = APIRouter(prefix="/platform/auth", tags=["Platform identity"])
 
@@ -40,7 +53,7 @@ router = APIRouter(prefix="/platform/auth", tags=["Platform identity"])
 class BootstrapInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     email: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$", max_length=254)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
 
 
 # Defines the login input model, contract, or value object.
@@ -62,13 +75,15 @@ class VerifyInput(ChallengeInput):
 # Defines the accept platform invite model, contract, or value object.
 class AcceptPlatformInvite(BaseModel):
     token: str = Field(min_length=20, max_length=200)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
 
 
 # Defines the complete platform password reset model, contract, or value object.
 class CompletePlatformPasswordReset(BaseModel):
     token: str = Field(min_length=20, max_length=200)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
+    password_confirmation: str = Field(min_length=1, max_length=128)
+    code: str = Field(pattern=r"^\d{6}$")
 
 
 # Defines the profile update model, contract, or value object.
@@ -79,12 +94,27 @@ class ProfileUpdate(BaseModel):
 # Defines the password change model, contract, or value object.
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=12, max_length=128)
+    new_password: str = Field(min_length=1, max_length=128)
 
 
 # Defines the mfa reset input model, contract, or value object.
 class MfaResetInput(BaseModel):
     password: str = Field(min_length=1, max_length=256)
+
+
+async def platform_permission_keys(db, user_id: str) -> list[str]:
+    """Return effective platform grants for the authenticated profile.
+
+    The platform UI uses this only to present a truthful read-only state. The
+    API permission dependencies remain authoritative for every mutation.
+    """
+    context = await platform_policy_context(db)
+    assignments = await platform_assignments(db, user_id)
+    return sorted(
+        key
+        for key in approved_permissions(Domain.PLATFORM).keys()
+        if decide(key, assignments, context).allowed
+    )
 
 
 # Handle challenge user for this module.
@@ -102,6 +132,50 @@ async def challenge_user(db, raw):
     return challenge, user
 
 
+async def issue_expired_password_reset(db, user) -> tuple[PlatformPasswordResetChallenge, PlatformOutboxMessage]:
+    """Create and deliver the reset link used by expired-password recovery."""
+    raw = secrets.token_urlsafe(32)
+    now = int(time.time())
+    previous = (
+        await db.scalars(
+            select(PlatformPasswordResetChallenge).where(
+                PlatformPasswordResetChallenge.user_id == user.id,
+                PlatformPasswordResetChallenge.used.is_(False),
+            )
+        )
+    ).all()
+    for challenge in previous:
+        challenge.used = True
+        challenge.updated_by = user.id
+    challenge = PlatformPasswordResetChallenge(
+        user_id=user.id,
+        token_hash=digest(raw),
+        expires=now + 3600,
+        initiated_by="expired-password-self-service",
+        reason="Expired password self-service recovery",
+        created_by=user.id,
+        updated_by=user.id,
+    )
+    db.add(challenge)
+    await db.flush()
+    delivery = await enqueue_platform_email(
+        db,
+        kind="platform.password-reset",
+        destination=user.email,
+        recipient_name=user.name,
+        raw_token=raw,
+        reference_id=challenge.id,
+        actor_id=user.id,
+    )
+    platform_audit(
+        db,
+        user.id,
+        "platform.password-reset.expired.request",
+        details={"challenge_id": challenge.id, "delivery_id": delivery.id},
+    )
+    return challenge, delivery
+
+
 # Handle bootstrap for this module.
 @router.post("/bootstrap", status_code=201)
 async def bootstrap(body: BootstrapInput, x_bootstrap_key: str = Header(default="")):
@@ -111,10 +185,15 @@ async def bootstrap(body: BootstrapInput, x_bootstrap_key: str = Header(default=
     async with control_session() as db:
         if await db.scalar(select(PlatformUser)):
             raise HTTPException(409, "Platform identity is already bootstrapped")
+        policy = effective_password_policy((await platform_configuration(db)).password_policy)
+        password_error = validate_password(body.password, policy)
+        if password_error:
+            raise HTTPException(422, password_error)
         user = PlatformUser(
             name=body.name,
             email=body.email.lower(),
             password_hash=hash_password(body.password),
+            password_changed_at=datetime.now(UTC),
             created_by="bootstrap",
             updated_by="bootstrap",
         )
@@ -123,7 +202,8 @@ async def bootstrap(body: BootstrapInput, x_bootstrap_key: str = Header(default=
         # The first platform identity is the control-plane bootstrap operator.
         # Give it the canonical locked role so RBAC, effective-access views,
         # and maker-checker eligibility all use the same source of truth.
-        await seed_platform_super_admin(db, user.id)
+        role = await seed_platform_super_admin(db, user.id)
+        user.role_id = role.id
         platform_audit(db, user.id, "platform.bootstrap")
     return {"status": "created"}
 
@@ -148,6 +228,19 @@ async def login(body: LoginInput, request: Request):
         platform_audit(db, user.id if user else "anonymous", "platform.password-success" if valid else "platform.failure")
         if not valid:
             raise HTTPException(401, "Invalid credentials")
+        policy = effective_password_policy((await platform_configuration(db)).password_policy)
+        if password_expired(user.password_changed_at, policy):
+            if user.mfa_enabled and user.mfa_secret:
+                _, delivery = await issue_expired_password_reset(db, user)
+                if delivery.status not in {"simulated", "sent", "delivered", "accepted"}:
+                    return JSONResponse(
+                        status_code=502,
+                        content={"detail": {"code": "password_reset_delivery_failed", "message": "We could not deliver the password reset email. Please try again later."}},
+                    )
+            return JSONResponse(
+                status_code=403,
+                content={"detail": {"code": "password_expired", "message": "A reset link has been sent to your registered email address.", "reset_available": bool(user.mfa_enabled and user.mfa_secret)}},
+            )
         old = (
             await db.scalars(
                 select(PlatformChallenge).where(
@@ -166,6 +259,10 @@ async def login(body: LoginInput, request: Request):
 @router.post("/invites/accept", status_code=201)
 async def accept_platform_invite(body: AcceptPlatformInvite):
     async with control_session() as db:
+        policy = effective_password_policy((await platform_configuration(db)).password_policy)
+        password_error = validate_password(body.password, policy)
+        if password_error:
+            raise HTTPException(422, password_error)
         invitation = await db.scalar(
             select(PlatformInvite)
             .where(PlatformInvite.token_hash == digest(body.token))
@@ -182,6 +279,7 @@ async def accept_platform_invite(body: AcceptPlatformInvite):
             # platform access is stored in PlatformRoleAssignment below.
             role="platform_admin",
             password_hash=hash_password(body.password),
+            password_changed_at=datetime.now(UTC),
             created_by="platform-invitation",
             updated_by="platform-invitation",
         )
@@ -198,6 +296,7 @@ async def accept_platform_invite(body: AcceptPlatformInvite):
         )
         if role is None or role.status != "published":
             raise HTTPException(422, "The invited platform role is no longer available")
+        user.role_id = role.id
         db.add(
             PlatformRoleAssignment(
                 user_id=user.id,
@@ -232,9 +331,23 @@ async def complete_platform_password_reset(body: CompletePlatformPasswordReset, 
         user = await db.get(PlatformUser, challenge.user_id)
         if user is None or not user.active:
             raise HTTPException(401, "Invalid or expired platform password-reset link")
+        if body.password != body.password_confirmation:
+            raise HTTPException(422, "Passwords do not match")
+        if not user.mfa_enabled or not user.mfa_secret:
+            raise HTTPException(401, "MFA must be enrolled before resetting the password")
+        counter = verify_totp(vault().open(user.mfa_secret), body.code, user.mfa_counter)
+        if counter is None:
+            platform_audit(db, user.id, "platform.password-reset.mfa-failure", details={"challenge_id": challenge.id})
+            raise HTTPException(401, "A valid unused authenticator code is required")
+        policy = effective_password_policy((await platform_configuration(db)).password_policy)
+        password_error = validate_password(body.password, policy)
+        if password_error:
+            raise HTTPException(422, password_error)
         challenge.used = True
         challenge.updated_by = user.id
+        user.mfa_counter = counter
         user.password_hash = hash_password(body.password)
+        user.password_changed_at = datetime.now(UTC)
         user.token_version += 1
         user.updated_by = user.id
         await db.execute(
@@ -296,6 +409,8 @@ async def me(actor: PlatformActor = Depends(current_platform)):
         user = await db.get(PlatformUser, actor.user_id)
         if user is None:
             raise HTTPException(404, "Platform profile not found")
+        policy = effective_password_policy((await platform_configuration(db)).password_policy)
+        expiry_at = password_expiry_at(user.password_changed_at, policy)
         assignment = await db.scalar(
             select(PlatformRoleAssignment)
             .where(PlatformRoleAssignment.user_id == user.id)
@@ -306,10 +421,14 @@ async def me(actor: PlatformActor = Depends(current_platform)):
             "id": user.id,
             "name": user.name,
             "email": user.email,
-            "role": "Platform Super Admin" if actor.is_bootstrap_operator else (assigned_role.name if assigned_role else user.role),
-            "role_id": "platform-super-admin" if actor.is_bootstrap_operator else (assigned_role.id if assigned_role else None),
+            "role": actor.role,
+            "role_id": actor.role_id or (assigned_role.id if assigned_role else user.role_id),
             "is_bootstrap_operator": actor.is_bootstrap_operator,
             "mfa_enabled": user.mfa_enabled,
+            "permissions": await platform_permission_keys(db, user.id),
+            "password_expires_at": expiry_at.isoformat() if expiry_at else None,
+            "password_expires_in_days": password_expiry_days_remaining(user.password_changed_at, policy),
+            "password_expired": password_expired(user.password_changed_at, policy),
         }
 
 
@@ -320,6 +439,8 @@ async def update_me(body: ProfileUpdate, actor: PlatformActor = Depends(current_
         user = await db.get(PlatformUser, actor.user_id)
         if user is None:
             raise HTTPException(404, "Platform profile not found")
+        policy = effective_password_policy((await platform_configuration(db)).password_policy)
+        expiry_at = password_expiry_at(user.password_changed_at, policy)
         assignment = await db.scalar(
             select(PlatformRoleAssignment)
             .where(PlatformRoleAssignment.user_id == user.id)
@@ -333,10 +454,14 @@ async def update_me(body: ProfileUpdate, actor: PlatformActor = Depends(current_
             "id": user.id,
             "name": user.name,
             "email": user.email,
-            "role": "Platform Super Admin" if actor.is_bootstrap_operator else (assigned_role.name if assigned_role else user.role),
-            "role_id": "platform-super-admin" if actor.is_bootstrap_operator else (assigned_role.id if assigned_role else None),
+            "role": actor.role,
+            "role_id": actor.role_id or (assigned_role.id if assigned_role else user.role_id),
             "is_bootstrap_operator": actor.is_bootstrap_operator,
             "mfa_enabled": user.mfa_enabled,
+            "permissions": await platform_permission_keys(db, user.id),
+            "password_expires_at": expiry_at.isoformat() if expiry_at else None,
+            "password_expires_in_days": password_expiry_days_remaining(user.password_changed_at, policy),
+            "password_expired": password_expired(user.password_changed_at, policy),
         }
 
 
@@ -347,7 +472,12 @@ async def change_password(body: PasswordChange, actor: PlatformActor = Depends(c
         user = await db.get(PlatformUser, actor.user_id)
         if user is None or not verify_password(body.current_password, user.password_hash):
             raise HTTPException(400, "Current password is incorrect")
+        policy = effective_password_policy((await platform_configuration(db)).password_policy)
+        password_error = validate_password(body.new_password, policy)
+        if password_error:
+            raise HTTPException(422, password_error)
         user.password_hash = hash_password(body.new_password)
+        user.password_changed_at = datetime.now(UTC)
         user.token_version += 1
         user.updated_by = actor.user_id
         await db.execute(update(PlatformSession).where(PlatformSession.user_id == user.id, PlatformSession.revoked.is_(False)).values(revoked=True, updated_by=actor.user_id))

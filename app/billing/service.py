@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.billing.models import Invoice, LedgerEntry, PaymentPlan
 from app.core.audit import audit
+from app.core.money import format_cents
 from app.core.repository import add, required
 from app.integrations.contracts import IntegrationFailure, PaymentRequest
 from app.integrations.registry import resolve
@@ -77,9 +78,9 @@ async def create_payment_plan(
                 "clinic_name": actor.organization.name,
                 "clinic_phone": actor.settings.public_content.get("contact_phone", "the clinic"),
                 "patient_first_name": patient.first_name,
-                "installment_amount": f"${installment['amount_cents'] / 100:.2f}",
+                "installment_amount": format_cents(installment["amount_cents"], jurisdiction(actor.organization.region).currency),
                 "due_date": due.strftime("%B %-d, %Y"),
-                "plan_balance": f"${balance / 100:.2f}",
+                "plan_balance": format_cents(balance, jurisdiction(actor.organization.region).currency),
             }
             for template_key, kind, send_date in (
                 ("installment-due-soon", "billing.installment-due", due - timedelta(days=3)),

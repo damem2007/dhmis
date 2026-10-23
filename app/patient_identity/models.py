@@ -1,7 +1,8 @@
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, String, event
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, Record
+from app.core.secure_fields import EncryptedText, email_lookup
 
 
 # Defines the patient user model, contract, or value object.
@@ -9,7 +10,8 @@ class PatientUser(Record, Base):
     __tablename__ = "patient_users"
     __table_args__ = {"schema": "tenant"}
     patient_id: Mapped[str] = mapped_column(ForeignKey("tenant.patients.id"), unique=True)
-    email: Mapped[str] = mapped_column(String(254), unique=True)
+    email: Mapped[str] = mapped_column(EncryptedText())
+    email_lookup: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(300))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     token_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -30,7 +32,8 @@ class PatientInvite(Record, Base):
     __tablename__ = "patient_invites"
     __table_args__ = {"schema": "tenant"}
     patient_id: Mapped[str] = mapped_column(ForeignKey("tenant.patients.id"))
-    email: Mapped[str] = mapped_column(String(254))
+    email: Mapped[str] = mapped_column(EncryptedText())
+    email_lookup: Mapped[str] = mapped_column(String(64), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires: Mapped[int] = mapped_column(BigInteger)
     used: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -44,10 +47,28 @@ class PatientVerificationChallenge(Record, Base):
     appointment_id: Mapped[str | None] = mapped_column(
         ForeignKey("tenant.appointments.id"), nullable=True
     )
-    email: Mapped[str] = mapped_column(String(254))
+    email: Mapped[str] = mapped_column(EncryptedText())
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     code_hash: Mapped[str] = mapped_column(String(64))
     expires: Mapped[int] = mapped_column(BigInteger)
     resend_after: Mapped[int] = mapped_column(BigInteger)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     used: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# Keep keyed email lookups synchronized for all ORM write paths.
+@event.listens_for(PatientUser, "before_insert")
+@event.listens_for(PatientUser, "before_update")
+def _sync_patient_user_email_lookup(mapper, connection, target):
+    """Derive the patient account lookup token before persistence."""
+
+    target.email_lookup = email_lookup(target.email)
+
+
+# Keep keyed invitation lookups synchronized for all ORM write paths.
+@event.listens_for(PatientInvite, "before_insert")
+@event.listens_for(PatientInvite, "before_update")
+def _sync_patient_invite_email_lookup(mapper, connection, target):
+    """Derive the invitation lookup token before persistence."""
+
+    target.email_lookup = email_lookup(target.email)

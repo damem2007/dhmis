@@ -2,6 +2,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 
 from app.core.database import control_session, organization_session
+from app.identity.password_policy import DEFAULT_PASSWORD_POLICY
 from app.organizations.models import Organization, PlatformConfiguration, TenantSettings
 
 SETTINGS_ID = "organization-settings"
@@ -11,6 +12,11 @@ DEFAULT_POLICY = {
     "cancellation_fee_cents": 0,
     "buffer_minutes": 0,
     "reminder_hours": 24,
+    # Clinics choose how configured discounts interact with insurance. The
+    # four modes cover the standard invoice/line and pre/post-insurance cases.
+    "discount_application_mode": "invoice_before_insurance",
+    "discounts": [],
+    "password_policy": deepcopy(DEFAULT_PASSWORD_POLICY),
 }
 DEFAULT_BRANDING = {
     "--sage": "#0ea968",
@@ -24,6 +30,14 @@ DEFAULT_BRANDING = {
     "--font-display": "Fraunces, Georgia, serif",
 }
 DEFAULT_LOGO_URL = "/assets/dhmis-logo-v2/svg/dhmis-lockup-website.svg"
+# Auto dentition defaults follow the approved age bands; tenant settings may override them.
+DEFAULT_CLINICAL_CHART = {
+    "save_mode": "manual",
+    "enabled_numbering_systems": ["universal"],
+    "default_numbering_system": "universal",
+    "procedure_code_set": "",
+    "dentition_age_ranges": {"primary_max_years": 11, "mixed_max_years": 21},
+}
 COMMUNICATION_TEMPLATE_VARIABLES = (
     "clinic_name", "clinic_phone", "patient_first_name", "provider_name",
     "appointment_date", "appointment_time", "installment_amount", "due_date",
@@ -88,6 +102,7 @@ async def platform_configuration(db) -> PlatformConfiguration:
             id=PLATFORM_SETTINGS_ID,
             default_visibility="organization",
             default_policy=deepcopy(DEFAULT_POLICY),
+            password_policy=deepcopy(DEFAULT_PASSWORD_POLICY),
             communication_templates=deepcopy(DEFAULT_COMMUNICATION_TEMPLATES),
             created_by="platform-default",
             updated_by="platform-default",
@@ -97,6 +112,20 @@ async def platform_configuration(db) -> PlatformConfiguration:
     else:
         templates = deepcopy(row.communication_templates)
         changed = False
+        default_policy = {**DEFAULT_POLICY, **(row.default_policy or {})}
+        default_policy["password_policy"] = {
+            **DEFAULT_PASSWORD_POLICY,
+            **(default_policy.get("password_policy") or {}),
+        }
+        if default_policy != (row.default_policy or {}):
+            row.default_policy = default_policy
+            changed = True
+        if not row.default_visibility:
+            row.default_visibility = "organization"
+            changed = True
+        if not row.password_policy:
+            row.password_policy = deepcopy(DEFAULT_PASSWORD_POLICY)
+            changed = True
         for key, value in DEFAULT_COMMUNICATION_TEMPLATES.items():
             if key not in templates or (
                 key == "staff-invitation" and templates[key].get("body") == LEGACY_STAFF_INVITATION_BODY
@@ -118,6 +147,7 @@ async def tenant_settings(db) -> TenantSettings:
             branding=deepcopy(DEFAULT_BRANDING),
             logo_url=DEFAULT_LOGO_URL,
             policy=deepcopy(DEFAULT_POLICY),
+            clinical_chart=deepcopy(DEFAULT_CLINICAL_CHART),
             communication_templates=deepcopy(DEFAULT_COMMUNICATION_TEMPLATES),
             migration_state={"legacy_control_backfilled": False},
         )
@@ -125,7 +155,28 @@ async def tenant_settings(db) -> TenantSettings:
         await db.flush()
     else:
         branding = {**DEFAULT_BRANDING, **(row.branding or {})}
+        policy = {**DEFAULT_POLICY, **(row.policy or {})}
+        policy["password_policy"] = {**DEFAULT_PASSWORD_POLICY, **(policy.get("password_policy") or {})}
         changed = branding != (row.branding or {})
+        if policy != (row.policy or {}):
+            row.policy = policy
+            changed = True
+        clinical_chart = {**DEFAULT_CLINICAL_CHART, **(row.clinical_chart or {})}
+        stored_ranges = (row.clinical_chart or {}).get("dentition_age_ranges") or {}
+        clinical_chart["dentition_age_ranges"] = {
+            "primary_max_years": stored_ranges.get("primary_max_years") if stored_ranges.get("primary_max_years") is not None else 11,
+            "mixed_max_years": stored_ranges.get("mixed_max_years") if stored_ranges.get("mixed_max_years") is not None else 21,
+        }
+        if clinical_chart != (row.clinical_chart or {}):
+            row.clinical_chart = clinical_chart
+            changed = True
+        migration_state = {
+            "legacy_control_backfilled": False,
+            **(row.migration_state or {}),
+        }
+        if migration_state != (row.migration_state or {}):
+            row.migration_state = migration_state
+            changed = True
         if not row.logo_url:
             row.logo_url = DEFAULT_LOGO_URL
             changed = True
@@ -194,7 +245,18 @@ async def configure_tenant(
         "visibility": visibility,
         "branding": {**DEFAULT_BRANDING, **deepcopy(branding)} if branding is not None else None,
         "logo_url": logo_url.strip() if isinstance(logo_url, str) and logo_url.strip() else DEFAULT_LOGO_URL if logo_url is not None else None,
-        "policy": policy,
+        "policy": (
+            {
+                **DEFAULT_POLICY,
+                **deepcopy(policy),
+                "password_policy": {
+                    **DEFAULT_PASSWORD_POLICY,
+                    **(deepcopy(policy).get("password_policy") or {}),
+                },
+            }
+            if policy is not None
+            else None
+        ),
         "jurisdiction_policy": jurisdiction_policy,
         "public_content": public_content,
         "booking_widget": booking_widget,

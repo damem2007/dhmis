@@ -21,12 +21,15 @@ from app.patient_identity.service import (
 from app.scheduling.models import Appointment
 from app.scheduling.schemas import Booking, Cancellation
 from app.scheduling.service import book, cancel_booking
+from app.scheduling.presentation import present_appointment
 
 router = APIRouter()
 
 # Handle appointments for this module.
 @router.get("/appointments")
 async def appointments(actor: PatientActor = Depends(current_patient), db=Depends(patient_db_session)):
+    from app.clinical.models import Encounter
+
     identifiers = await authorized_patient_ids(db, actor)
     rows = (
         await db.scalars(
@@ -35,8 +38,64 @@ async def appointments(actor: PatientActor = Depends(current_patient), db=Depend
             .order_by(Appointment.starts_at.desc())
         )
     ).all()
+    encounter_rows = (
+        await db.execute(
+            select(Encounter.appointment_id, Encounter.status).where(
+                Encounter.appointment_id.in_([row.id for row in rows])
+            )
+        )
+    ).all() if rows else []
+    encounter_status = {appointment_id: status for appointment_id, status in encounter_rows}
+    changed = False
+    for row in rows:
+        status = encounter_status.get(row.id)
+        expected = "completed" if status == "completed" else "checked-in" if status == "open" else None
+        if expected and row.status != expected:
+            row.status = expected
+            changed = True
+    if changed:
+        await db.flush()
     audit(db, actor.user_id, "portal.read", "appointments", patient_id=actor.patient_id)
-    return [serialize(row) for row in rows]
+    return [present_appointment(row) for row in rows]
+
+
+@router.post("/appointments/{identifier}/check-in")
+async def self_check_in(
+    identifier: str,
+    actor: PatientActor = Depends(current_patient),
+    db=Depends(patient_db_session),
+):
+    """Allow a patient to check in for their own scheduled appointment."""
+    from app.clinical.models import Encounter
+    from app.core.repository import add
+
+    row = await required(db, Appointment, identifier, lock=True)
+    await require_patient_access(db, actor, row.patient_id)
+    existing = await db.scalar(select(Encounter).where(Encounter.appointment_id == row.id))
+    if existing:
+        if row.status == "confirmed":
+            row.status = "completed" if existing.status == "completed" else "checked-in"
+            row.updated_by = actor.user_id
+            await db.flush()
+        return present_appointment(row)
+    if row.status != "confirmed":
+        raise HTTPException(409, "This appointment cannot be checked in")
+    await add(
+        db,
+        Encounter,
+        {
+            "appointment_id": row.id,
+            "patient_id": row.patient_id,
+            "location_id": row.location_id,
+            "provider_id": row.provider_id,
+        },
+        actor.user_id,
+    )
+    row.status = "checked-in"
+    row.updated_by = actor.user_id
+    audit(db, actor.user_id, "portal.check-in", "appointments", row.id, patient_id=row.patient_id)
+    await db.flush()
+    return present_appointment(row)
 
 
 # Create or issue create appointment while applying existing validation and authorization.
@@ -47,7 +106,7 @@ async def create_appointment(
     if not actor.organization.booking_enabled:
         raise HTTPException(404, "Online booking is not enabled")
     await require_patient_access(db, actor, body.patient_id)
-    return serialize(await book(db, actor, body))
+    return present_appointment(await book(db, actor, body))
 
 
 # Handle reschedule appointment for this module.
@@ -62,7 +121,7 @@ async def reschedule_appointment(
     await require_patient_access(db, actor, row.patient_id)
     if body.patient_id != row.patient_id:
         raise HTTPException(422, "Appointment patient cannot be changed")
-    return serialize(await book(db, actor, body, identifier))
+    return present_appointment(await book(db, actor, body, identifier))
 
 
 # Apply the cancel appointment lifecycle transition and its existing safeguards.
@@ -75,7 +134,7 @@ async def cancel_appointment(
 ):
     row = await required(db, Appointment, identifier)
     await require_patient_access(db, actor, row.patient_id)
-    return serialize(await cancel_booking(db, actor, identifier, body.reason))
+    return present_appointment(await cancel_booking(db, actor, identifier, body.reason))
 
 
 # Handle invoices for this module.
@@ -170,4 +229,3 @@ async def statement(
         history.append({**serialize(entry), "running_balance_cents": balance})
     audit(db, actor.user_id, "portal.statement", "ledger", patient_id)
     return {"patient_id": patient_id, "balance_cents": balance, "entries": history, "payment_plans": [serialize(x) for x in plans], "invoice_count": len(invoices)}
-

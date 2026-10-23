@@ -3,15 +3,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-ROOT = Path(__file__).resolve().parents[3]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 # Defines the settings model, contract, or value object.
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=BACKEND_ROOT / ".env", extra="ignore")
     database_url: SecretStr
     jwt_secret: SecretStr
     bootstrap_key: SecretStr
@@ -27,7 +27,11 @@ class Settings(BaseSettings):
     environment: str = "development"
     staff_session_ttl_seconds: int = 28800
     staff_idle_timeout_seconds: int = 3600
-    platform_public_url: str = "http://192.168.1.68:5172"
+    # Roles & Access reads these values from the backend metadata endpoint so
+    # every client uses the same refresh cadence and module batch size.
+    rbac_catalogue_check_interval_seconds: int = Field(default=60, ge=15, le=3600)
+    rbac_catalogue_modules_per_page: int = Field(default=5, ge=1, le=50)
+    platform_public_url: str = "http://platform.dhmis.local:8080" #"http://192.168.1.68:5172"
     tenant_admin_public_url_template: str = "http://admin.{tenant_slug}.dhmis.local:5175"
     tenant_public_url_template: str = "http://{tenant_slug}.dhmis.local:8080"
     cors_origins: list[str] = [
@@ -60,7 +64,7 @@ class Settings(BaseSettings):
             return value
         raw = str(value).strip()
         if raw == "{":
-            contents = (ROOT / ".env").read_text()
+            contents = (BACKEND_ROOT / ".env").read_text()
             raw = contents.split(name + "=", 1)[1].lstrip()
         try:
             result, _ = json.JSONDecoder().raw_decode(raw)

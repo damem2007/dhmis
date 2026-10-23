@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.database import control_session
 from app.platform_identity.models import PlatformAuditEvent, PlatformSession, PlatformUser
+from app.rbac.models import PlatformRole
 
 platform_bearer = HTTPBearer(auto_error=False)
 
@@ -23,6 +24,7 @@ class PlatformActor:
     session_id: str
     mfa_authenticated_at: int = 0
     is_bootstrap_operator: bool = False
+    role_id: str | None = None
 
 
 def is_bootstrap_platform_user(user: PlatformUser) -> bool:
@@ -85,6 +87,7 @@ async def current_platform(
         )
         async with control_session() as db:
             user = await db.get(PlatformUser, data["sub"])
+            role = await db.get(PlatformRole, user.role_id) if user and user.role_id else None
             session = await db.scalar(
                 select(PlatformSession)
                 .where(PlatformSession.id == data["sid"])
@@ -107,10 +110,11 @@ async def current_platform(
         return PlatformActor(
             user.id,
             user.name,
-            user.role,
+            role.name if role is not None else user.role,
             session.id,
             data["iat"],
             is_bootstrap_platform_user(user),
+            role.id if role is not None else user.role_id,
         )
     except (jwt.InvalidTokenError, ValueError, KeyError):
         raise HTTPException(401, "Valid platform operator session required") from None

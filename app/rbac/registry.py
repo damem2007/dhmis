@@ -65,6 +65,7 @@ def load_approved_registry(path: Path = APPROVED_REGISTRY_PATH) -> ApprovedRegis
                     restricted=bool(action.get("restricted", False)),
                     requires=tuple(action.get("requires", [])),
                     valid_scopes=scopes,
+                    default_grant=bool(action.get("defaultGrant", True)),
                     reviewed=bool(action.get("reviewed", resource.get("reviewed", False))),
                     retired=bool(action.get("retired", resource.get("retired", False))),
                 )

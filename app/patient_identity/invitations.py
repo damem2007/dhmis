@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.core.audit import audit
 from app.core.config import settings
 from app.core.repository import add
+from app.core.secure_fields import email_lookup, normalized_email
 from app.identity.security import digest
 from app.notifications.models import OutboxMessage
 from app.notifications.service import deliver_message_now
@@ -22,12 +23,12 @@ def patient_invitation_url(raw_token: str, tenant_slug: str) -> str:
 
 # Create or issue issue patient invite while applying existing validation and authorization.
 async def issue_patient_invite(db, patient, email: str, actor):
-    normalized_email = email.strip().lower()
-    if not normalized_email:
+    normalized = normalized_email(email)
+    if not normalized:
         return None
     if await db.scalar(select(PatientUser).where(PatientUser.patient_id == patient.id)):
         return None
-    if await db.scalar(select(PatientUser).where(PatientUser.email == normalized_email)):
+    if await db.scalar(select(PatientUser).where(PatientUser.email_lookup == email_lookup(normalized))):
         raise HTTPException(409, 'A Client Portal account already uses this email address')
     raw = secrets.token_urlsafe(32)
     existing = (await db.scalars(select(PatientInvite).where(PatientInvite.patient_id == patient.id, PatientInvite.used.is_(False)))).all()
@@ -36,7 +37,8 @@ async def issue_patient_invite(db, patient, email: str, actor):
         invitation.updated_by = actor.user_id
     record = await add(db, PatientInvite, {
         'patient_id': patient.id,
-        'email': normalized_email,
+        'email': normalized,
+        'email_lookup': email_lookup(normalized),
         'token_hash': digest(raw),
         'expires': int(time.time()) + 86400,
     }, actor.user_id)

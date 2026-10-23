@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.core.database import control_session, organization_session
 from app.organizations.configuration import tenant_settings
+from app.organizations.jurisdiction import jurisdiction
 from app.organizations.models import Organization
 
 RESERVED_SLUGS = {"admin", "api", "health", "portal", "public", "v1"}
@@ -14,7 +15,7 @@ SURFACE_FEATURE = {
     "portal": "patient_portal_enabled",
     "booking": "booking_enabled",
 }
-PLATFORM_HOST_SUFFIX = ".dhmis.local"
+PLATFORM_HOST_SUFFIX = ".dhmis.test"
 PLATFORM_HOST_LABELS = {"admin", "api", "platform", "www"}
 
 
@@ -166,6 +167,8 @@ async def safe_metadata(resolution: TenantResolution):
         "source": resolution.source,
         "domain": resolution.domain,
         "surface": resolution.surface,
+        "region": organization.region,
+        "currency": jurisdiction(organization.region).currency,
         "features": {
             "front_office": organization.front_office_enabled,
             "booking": organization.booking_enabled,

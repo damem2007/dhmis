@@ -46,8 +46,8 @@ def test_domain_contexts_preserve_shared_keys_without_cross_domain_access():
     tenant = approved_permissions(Domain.TENANT)
     platform = approved_permissions(Domain.PLATFORM)
 
-    assert len(tenant) == 845
-    assert len(platform) == 244
+    assert len(tenant) == 915
+    assert len(platform) == 270
     assert tenant["access.permission_catalogue.read"].domain is Domain.TENANT
     assert platform["access.permission_catalogue.read"].domain is Domain.PLATFORM
     assert "access.platform_user.read" not in tenant
@@ -109,6 +109,24 @@ def test_decision_enforces_inheritance_deny_dependencies_and_scope():
     assert filtered.allowed
     assert filtered.reach is Scope.ORGANIZATION
     assert filtered.filter_scope is Scope.ASSIGNED
+
+
+def test_locked_tenant_super_admin_allows_reviewed_permission_without_materialized_grant():
+    role = Role(
+        id="tenant-super-admin",
+        name="Tenant Super Admin",
+        domain=Domain.TENANT,
+        status=RoleStatus.PUBLISHED,
+        grants={},
+        locked=True,
+    )
+    decision = decide(
+        "access.permission_catalogue.read",
+        [Assignment("user", role.id, Scope.ORGANIZATION, None)],
+        _context(role),
+    )
+
+    assert decision.allowed
 
 
 # Exercise or prepare test persisted tenant context defaults to deny and is tenant isolated for this test module.
@@ -173,7 +191,7 @@ async def test_tenant_permission_api_uses_canonical_domain_guard(client, tenants
         headers=tenant["headers"],
     )
     assert catalogue.status_code == 200
-    assert catalogue.json()["total"] == 845
+    assert catalogue.json()["total"] == 909
     assert all(item["domain"] == "tenant" for item in catalogue.json()["items"])
 
     rejected_domain = await client.get(

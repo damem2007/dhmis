@@ -11,6 +11,8 @@ from app.billing.models import Invoice, PaymentPlan
 from app.care_coordination.models import LabCase
 from app.claims.models import Claim
 from app.core.repository import serialize
+from app.core.money import format_cents
+from app.organizations.jurisdiction import jurisdiction
 from app.identity.models import StaffInvite
 from app.notifications.models import OutboxMessage
 
@@ -145,7 +147,7 @@ async def project_actions(db, actor, scope: AnalyticsScope):
             actor_id=actor.user_id,
             category="receivables",
             title="Installment overdue" if overdue else "Installment due soon",
-            detail=f"{next_due['amount_cents']} cents due {next_due['due']}",
+            detail=f"{format_cents(next_due['amount_cents'], jurisdiction(actor.organization.region).currency)} due {next_due['due']}",
             severity="urgent" if overdue else "watch",
             role_scopes=["accounting", "front-desk", "organization-executive"],
             location_id=plan.location_id,

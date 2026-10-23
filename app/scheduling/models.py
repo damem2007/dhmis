@@ -19,6 +19,8 @@ class Appointment(Record, Base):
     chair: Mapped[str] = mapped_column(String(40))
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Keep the clinic timezone that was authoritative when this appointment was booked.
+    timezone: Mapped[str] = mapped_column(String(60), default="UTC", server_default="UTC")
     procedure: Mapped[str] = mapped_column(String(180))
     status: Mapped[str] = mapped_column(String(25), default="confirmed")
     cancellation_reason: Mapped[str] = mapped_column(String(500), default="")

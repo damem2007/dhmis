@@ -14,6 +14,7 @@ from app.core.audit import audit
 from app.core.database import organization_session
 from app.core.rate_limit import get_pt_throttle_args
 from app.core.repository import add
+from app.core.secure_fields import email_lookup, normalized_email
 from app.identity.passwords import hash_password, verify_password
 from app.identity.router import DUMMY_HASH, throttle
 from app.identity.security import digest
@@ -75,7 +76,7 @@ async def accept_invite(body: AcceptInvite):
             raise HTTPException(401, "Invalid invitation")
         if await db.scalar(select(PatientUser).where(PatientUser.patient_id == invitation.patient_id)):
             raise HTTPException(409, "Client Portal account already exists")
-        user = await add(db, PatientUser, {"patient_id": invitation.patient_id, "email": invitation.email, "password_hash": hash_password(body.password)}, "patient-invitation")
+        user = await add(db, PatientUser, {"patient_id": invitation.patient_id, "email": invitation.email, "email_lookup": email_lookup(invitation.email), "password_hash": hash_password(body.password)}, "patient-invitation")
         invitation.used = True
         audit(db, user.id, "portal.accept", "patients", user.patient_id)
     return {"status": "created"}
@@ -97,7 +98,7 @@ async def login(body: Login, request: Request):
         verify_password(body.password, DUMMY_HASH)
         raise HTTPException(401, "Invalid credentials")
     async with organization_session(organization) as db:
-        user = await db.scalar(select(PatientUser).where(PatientUser.email == body.email.lower()))
+        user = await db.scalar(select(PatientUser).where(PatientUser.email_lookup == email_lookup(body.email)))
         valid = verify_password(body.password, user.password_hash if user else DUMMY_HASH) and bool(user and user.active)
         audit(db, user.id if user else "anonymous", "portal.login" if valid else "portal.failure", "patient_auth")
         if not valid:
@@ -123,20 +124,20 @@ async def request_verification(body: VerificationRequest, request: Request):
     code = "".join(secrets.choice(string.digits) for _ in range(6))
     now = int(time.time())
     async with organization_session(organization) as db:
-        user = await db.scalar(select(PatientUser).where(PatientUser.email == body.email.lower(), PatientUser.active))
+        user = await db.scalar(select(PatientUser).where(PatientUser.email_lookup == email_lookup(body.email), PatientUser.active))
         patient = await db.get(Patient, user.patient_id) if user else None
         appointment = None
         if body.appointment_reference:
             appointment = await db.scalar(select(Appointment).where(Appointment.id == body.appointment_reference, Appointment.status.in_(["confirmed", "checked-in"])))
             candidate = await db.get(Patient, appointment.patient_id) if appointment else None
-            patient = candidate if candidate and candidate.email.lower() == body.email.lower() else None
+            patient = candidate if candidate and normalized_email(candidate.email) == normalized_email(body.email) else None
         if patient is None:
             audit(db, "anonymous", "portal.verification.request", "patient_auth", matched=False)
             return generic
         old = (await db.scalars(select(PatientVerificationChallenge).where(PatientVerificationChallenge.patient_id == patient.id, PatientVerificationChallenge.used.is_(False)))).all()
         for challenge in old:
             challenge.used = True
-        challenge = await add(db, PatientVerificationChallenge, {"patient_id": patient.id, "appointment_id": appointment.id if appointment else None, "email": body.email.lower(), "token_hash": digest(raw), "code_hash": digest(code), "expires": now + 600, "resend_after": now + 60}, "patient-verification")
+        challenge = await add(db, PatientVerificationChallenge, {"patient_id": patient.id, "appointment_id": appointment.id if appointment else None, "email": normalized_email(body.email), "token_hash": digest(raw), "code_hash": digest(code), "expires": now + 600, "resend_after": now + 60}, "patient-verification")
         db.add(OutboxMessage(kind="patient.verification", payload={"patient_id": patient.id, "destination": body.email.lower(), "body": f"Your DHMIS Client Portal verification code is {code}. It expires in 10 minutes."}, idempotency_key=f"patient-verification:{challenge.id}", due_at=datetime.now(timezone.utc), created_by="patient-verification", updated_by="patient-verification"))
         audit(db, "anonymous", "portal.verification.request", "patient_auth", patient_id=patient.id, matched=True)
     return {**generic, "challenge_token": raw}
@@ -158,7 +159,7 @@ async def verify_code(body: VerificationCode):
             raise HTTPException(401, "Verification challenge is invalid or expired")
         user = await db.scalar(select(PatientUser).where(PatientUser.patient_id == challenge.patient_id).with_for_update())
         if user is None:
-            user = await add(db, PatientUser, {"patient_id": challenge.patient_id, "email": challenge.email, "password_hash": hash_password(secrets.token_urlsafe(48))}, "patient-verification")
+            user = await add(db, PatientUser, {"patient_id": challenge.patient_id, "email": challenge.email, "email_lookup": email_lookup(challenge.email), "password_hash": hash_password(secrets.token_urlsafe(48))}, "patient-verification")
         elif not user.active:
             raise HTTPException(401, "Verification challenge is invalid or expired")
         challenge.used = True

@@ -119,6 +119,7 @@ class PlatformConfiguration(Record, Base):
     __table_args__ = {"schema": "dhmis_control"}
     default_visibility: Mapped[str] = mapped_column(String(20), default="organization")
     default_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    password_policy: Mapped[dict] = mapped_column(JSON, default=dict)
     communication_templates: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -146,6 +147,7 @@ class TenantSettings(Record, Base):
     communication_templates: Mapped[dict] = mapped_column(JSON, default=dict)
     operational_thresholds: Mapped[dict] = mapped_column(JSON, default=dict)
     booking_widget: Mapped[dict] = mapped_column(JSON, default=dict)
+    clinical_chart: Mapped[dict] = mapped_column(JSON, default=dict)
     migration_state: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
