@@ -161,7 +161,7 @@ class Onboarding(BaseModel):
     booking_enabled: bool = True
     patient_portal_enabled: bool = True
     booking_widget_origin: str | None = Field(default=None, max_length=300)
-    plan_code: str | None = Field(default=None, min_length=2, max_length=80)
+    plan_code: str = Field(min_length=2, max_length=80)
     subscription_status: str = Field(default="trialing", pattern=r"^(trialing|active)$")
     trial_ends_at: datetime | None = None
     current_period_start: datetime | None = None
@@ -995,6 +995,60 @@ async def migrate_onboarded_tenants(
     return payload
 
 
+# Return only enabled, active entitlements for a selected onboarding plan.
+async def _onboarding_plan_entitlements(db, plan: PlatformPlan) -> set[str]:
+    return set(
+        (
+            await db.scalars(
+                select(PlatformFeature.key)
+                .join(PlatformPlanFeature, PlatformPlanFeature.feature_id == PlatformFeature.id)
+                .where(
+                    PlatformPlanFeature.plan_id == plan.id,
+                    PlatformPlanFeature.enabled,
+                    PlatformFeature.active,
+                )
+            )
+        ).all()
+    )
+
+
+# Enforce plan-governed onboarding options independently of the browser UI.
+def _validate_onboarding_plan_options(
+    body: Onboarding,
+    selected_plan: PlatformPlan | None,
+    entitlements: set[str],
+) -> None:
+    if body.patient_portal_enabled and selected_plan is not None and "module.patient_portal" not in entitlements:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PLAN_ENTITLEMENT_REQUIRED",
+                "message": "The selected plan does not include Patient Portal.",
+                "feature": "module.patient_portal",
+            },
+        )
+    if not body.booking_widget_origin:
+        return
+    if selected_plan is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PLAN_REQUIRED",
+                "message": "Select a plan before requesting Appointment Widget approval.",
+                "feature": "module.appointment_widget",
+            },
+        )
+    if "module.appointment_widget" not in entitlements:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PLAN_ENTITLEMENT_REQUIRED",
+                "message": "The selected plan does not include Appointment Widget.",
+                "feature": "module.appointment_widget",
+            },
+        )
+
+
 @router.post("/platform/organizations", status_code=201)
 async def onboarding(
     body: Onboarding,
@@ -1006,15 +1060,16 @@ async def onboarding(
         defaults = await platform_configuration(db)
         default_policy = Policy(**defaults.default_policy).model_dump()
         default_templates = dict(defaults.communication_templates)
-        if body.plan_code:
-            selected_plan = await db.scalar(
-                select(PlatformPlan).where(
-                    PlatformPlan.code == body.plan_code,
-                    PlatformPlan.active,
-                )
+        selected_plan = await db.scalar(
+            select(PlatformPlan).where(
+                PlatformPlan.code == body.plan_code,
+                PlatformPlan.active,
             )
-            if selected_plan is None:
-                raise HTTPException(422, "Selected plan is unavailable")
+        )
+        if selected_plan is None:
+            raise HTTPException(422, "Selected plan is unavailable")
+        selected_entitlements = await _onboarding_plan_entitlements(db, selected_plan)
+        _validate_onboarding_plan_options(body, selected_plan, selected_entitlements)
         organizations = (await db.scalars(select(Organization))).all()
         assigned = {
             binding["hostname"]

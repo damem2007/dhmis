@@ -15,7 +15,44 @@ python -m pip install -r requirements.lock.txt
 cp .env.example .env
 ```
 
-Set the database, JWT, bootstrap, demo-password, vault, Redis, and provider values in `.env` (the file is `Backend/.env` from the repository root).
+Set the database, JWT, bootstrap, demo-password, key-provider, Redis, and provider values in `.env` (the file is `Backend/.env` from the repository root). `KEY_PROVIDER=local` is for development and tests. Production must use the selected managed KMS/HSM adapter and must not rely on a single process-local vault secret.
+
+### Key-management implementation status
+
+The repository contains the application-side key-management and migration
+boundary. Production still requires provider-specific operational approval,
+but the application workflows below are implemented:
+
+| Capability | Current state |
+| --- | --- |
+| Provider contract | `KeyProvider` defines health, wrap and unwrap operations. |
+| Local provider | AES-GCM wrapping provider using `VAULT_KEY`, for local development and tests only. |
+| Versioned envelopes | New protected values use the `dhmis-v2` envelope; malformed envelopes fail closed. |
+| Tenant DEKs | `organization_keys` stores a wrapped DEK and non-secret recovery metadata per Organization. Provisioning creates a key for new Organizations. |
+| Legacy compatibility | Existing `VAULT_KEY` ciphertext is dual-read while migration is in progress. New writes use the versioned path. |
+| Rotation | `rotate-tenant-keys` supports DEK rotation, provider-only re-wrapping, and tenant-scoped ciphertext re-encryption. Retired wrapped keys remain in the control plane for the approved retention window. |
+| Readiness and maintenance | `/health` reports key-provider readiness; protected routes return a structured 503 when encryption readiness is unavailable. |
+| Recovery verification | `recovery-test` validates live provider unwrap; `recovery-test --restore-dsn <read-only-restore>` verifies wrapped keys from an isolated restored database without writing to it. |
+
+The four managed provider adapters are now available behind optional SDKs:
+
+| `KEY_PROVIDER` | Adapter | Required configuration/credential source |
+| --- | --- | --- |
+| `aws-kms` (or `aws`) | AWS KMS | `AWS_KMS_KEY_ID`, `AWS_KMS_REGION`, and the boto3 default credential chain. |
+| `gcp-kms` (or `gcp`) | Google Cloud KMS | `GCP_KMS_KEY_NAME` and Google Application Default Credentials. |
+| `azure-key-vault` (or `azure`) | Azure Key Vault | `AZURE_KEY_VAULT_KEY_URL` and `DefaultAzureCredential`. |
+| `vault-transit` (or `vault`) | HashiCorp Vault Transit | `VAULT_TRANSIT_ADDR`, `VAULT_TRANSIT_MOUNT`, `VAULT_TRANSIT_KEY`, `VAULT_TRANSIT_TOKEN`, and optional namespace. |
+
+Install the provider SDKs from `requirements.kms.txt` in the deployment image,
+or install only the selected SDK. Provider credentials are intentionally not
+stored in this repository. The adapters use the platform SDK credential
+chains, so deployment only needs to supply the selected key reference and
+secret/identity configuration.
+
+The remaining production gates are provider-specific IAM and region policy,
+backup ownership and restore scheduling, deletion/retention enforcement, and
+an approved dual-read retirement plan. The application migration and restore
+verification commands are available but must be rehearsed in staging.
 
 Use the application CLI for schema-aware migrations. It applies the control-plane migration chain, the tenant template chain, and the approved setup seed where appropriate. Running raw Alembic commands does not enumerate onboarded tenant schemas.
 
@@ -59,6 +96,135 @@ Run one notification and platform-delivery dispatcher pass:
 
 ```bash
 .venv/bin/python -m app.cli dispatch
+```
+
+Inspect encryption-provider readiness without printing key material:
+
+```bash
+.venv/bin/python -m app.cli key-health
+```
+
+Rotate tenant DEKs and re-encrypt all encrypted patient, identity, outbox and
+secure-messaging values for each tenant during a reviewed maintenance window:
+
+```bash
+.venv/bin/python -m app.cli rotate-tenant-keys
+```
+
+Use `--organization-id` for one tenant, `--batch-size` to bound each read,
+`--dry-run` to count rows without writing, `--no-reencrypt` to rotate only the
+wrapped key row, or `--rewrap-only` to preserve the DEK and change only its
+provider envelope.
+Legacy `VAULT_KEY` values are read during this migration and are replaced by
+the active tenant-DEK envelope when the command completes.
+
+To run the idempotent migration/backfill without rotating keys:
+
+```bash
+.venv/bin/python -m app.cli migrate-encryption --batch-size 500
+```
+
+Run the provider and tenant-key recovery probe:
+
+```bash
+.venv/bin/python -m app.cli recovery-test
+```
+
+After restoring a staging backup into an isolated database, verify its
+control-plane wrapped keys without modifying the restore target:
+
+```bash
+.venv/bin/python -m app.cli recovery-test --restore-dsn "$RESTORED_DATABASE_URL"
+```
+
+### Staging checklist
+
+Staging is a compatibility and migration rehearsal environment. Use a
+staging-only KMS/Vault key and identity when validating the selected managed
+adapter; never copy a production key or token into staging. If the provider
+integration is not under test, `KEY_PROVIDER=local` remains acceptable for a
+disposable staging run. This exercises the envelope, tenant-key, dual-read and
+maintenance contracts without making a local wrapping secret look like
+production key custody.
+
+Before opening staging traffic:
+
+1. Apply the schema chain with `.venv/bin/python -m app.cli migrate` and confirm
+   migrations `0060_tenant_key_management` and `0061_provider_key_version` are at the current head for the
+   control plane, template and every onboarded tenant.
+2. Run `.venv/bin/python -m app.cli key-health` and verify that the provider is
+   `local`, `ready` is `true`, and no key material is printed.
+3. Provision a disposable test Organization and confirm that its
+   `organization_keys` record contains a wrapped key, an active status and only
+   non-secret recovery metadata.
+4. Exercise a legacy `VAULT_KEY` ciphertext fixture and a `dhmis-v2` value in
+   the same test cycle. The versioned value must be preferred, and the legacy
+   value must remain readable only through the compatibility path.
+5. Run `.venv/bin/python -m app.cli migrate-encryption --dry-run`, review the
+   per-tenant counts, then run it without `--dry-run` and verify that legacy
+   patient and messaging ciphertext is replaced by tenant envelopes.
+6. Run `.venv/bin/python -m app.cli rotate-tenant-keys --dry-run`, approve the
+   change, then run the rotation and inspect the active/retired key rows.
+7. Restore a staging database backup into an isolated staging database and run
+   `recovery-test --restore-dsn` to verify the restored wrapped-key records and
+   tenant-key probes.
+7. Check `/health` during each step. A failed provider check must report
+   `status: maintenance` and protected application routes must fail closed with
+   HTTP 503 rather than serving encrypted data without a usable key.
+
+### Production readiness and deployment checklist
+
+Do not deploy the current `KEY_PROVIDER=local` path to production. Production
+activation is blocked until the following decisions and implementation work are
+approved and evidenced:
+
+1. **Managed provider:** select one of the implemented KMS/HSM adapters, install
+   its optional SDK, and configure it. The adapter must support health, wrap
+   and unwrap without returning master-key material to the application.
+2. **Region and jurisdiction:** document the KMS key region, encrypted-backup
+   regions, Canada-first residency requirements and any permitted
+   cross-border recovery path.
+3. **Service identity:** create a dedicated backend service identity with
+   least-privilege wrap/unwrap access. Separate deployment, rotation,
+   recovery and key-administration permissions, and record emergency access.
+4. **Deletion and retention:** enable KMS deletion protection, define scheduled
+   deletion controls, retain old key versions for the migration and rollback
+   window, and publish the retention/legal-hold policy.
+5. **Backup and recovery ownership:** assign the operational owner and
+   approver for encrypted backups, wrapped-key records, restore tests and
+   incident recovery. Record a successful restore test before go-live.
+6. **Migration timing:** approve a change window for existing patient and
+   messaging ciphertext. Inventory legacy rows, create or verify a DEK for
+   every Organization, backfill/re-encrypt in resumable batches, verify counts
+   and decryptability, retain the dual-read path through the rollback period,
+   and only then plan legacy-key retirement.
+
+The deployment sequence should be:
+
+```text
+backup and restore rehearsal
+        ↓
+managed-provider health check (no application traffic yet)
+        ↓
+control-plane/template/tenant migration via app.cli migrate
+        ↓
+all-tenant DEK backfill and legacy ciphertext migration
+        ↓
+verification, audit review and recovery test
+        ↓
+enable application traffic
+        ↓
+scheduled rotation and eventual legacy compatibility retirement
+```
+
+Run the operational commands only inside an approved change window:
+
+```bash
+.venv/bin/python -m app.cli key-health
+.venv/bin/python -m app.cli migrate
+.venv/bin/python -m app.cli migrate-encryption
+.venv/bin/python -m app.cli rotate-tenant-keys
+.venv/bin/python -m app.cli recovery-test
 ```
 
 Start the API:

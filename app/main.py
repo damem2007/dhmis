@@ -10,13 +10,15 @@ from app.billing.operations import router as financial_operations
 from app.billing.router import router as billing
 from app.care_coordination.router import router as care_coordination
 from app.claims.router import router as claims
-from app.code_library.router import router as code_library
 from app.clinical.router import router as clinical
 from app.cms.router import router as cms
+from app.code_library.router import router as code_library
 from app.consents.router import router as consents
 from app.core import all_models, scope  # noqa: F401
 from app.core.audit import request_context
 from app.core.config import settings
+from app.core.key_management import KeyManagementUnavailable
+from app.core.key_management import health as key_health
 from app.dashboard.router import router as dashboard
 from app.documents.router import router as documents
 from app.forms.router import router as forms
@@ -112,6 +114,14 @@ app.include_router(financial_operations, prefix="/v1")
 app.include_router(notifications, prefix="/v1")
 
 
+@app.on_event("startup")
+async def initialize_key_management():
+    """Record encryption readiness without preventing health diagnostics."""
+
+    app.state.key_management = key_health()
+    app.state.maintenance_mode = not app.state.key_management.get("ready", False)
+
+
 # Handle integrity error for this module.
 @app.exception_handler(IntegrityError)
 async def integrity_error(request, error):
@@ -123,7 +133,32 @@ async def integrity_error(request, error):
 # Handle health for this module.
 @app.get("/health")
 async def health():
-    return {"status": "ok", "environment": settings().environment, "production_ready": False}
+    key_status = key_health()
+    return {
+        "status": "ok" if key_status.get("ready") else "maintenance",
+        "environment": settings().environment,
+        "production_ready": False,
+        "key_management": key_status,
+    }
+
+
+@app.middleware("http")
+async def encryption_maintenance_gate(request: Request, call_next):
+    """Keep encrypted-data routes closed when key custody is unavailable."""
+
+    if request.url.path != "/health":
+        key_status = key_health()
+        app.state.maintenance_mode = not key_status.get("ready", False)
+        if app.state.maintenance_mode:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Encryption key management is in maintenance mode",
+                    "code": "encryption_maintenance",
+                    "maintenance": True,
+                },
+            )
+    return await call_next(request)
 
 
 # Create or issue request audit context while applying existing validation and authorization.
@@ -145,3 +180,17 @@ async def request_audit_context(request: Request, call_next):
 @app.exception_handler(IntegrationFailure)
 async def integration_failure(request, error):
     return JSONResponse(status_code=502, content={"detail": str(error)})
+
+
+@app.exception_handler(KeyManagementUnavailable)
+async def key_management_failure(request, error):
+    """Fail closed when encrypted data cannot be safely opened or written."""
+
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "Encrypted data is temporarily unavailable",
+            "code": "encryption_unavailable",
+            "maintenance": True,
+        },
+    )

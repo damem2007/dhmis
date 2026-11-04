@@ -26,6 +26,7 @@ from app.operations.models import ProviderCredential
 from app.organizations.models import (
     Location,
     Organization,
+    OrganizationKey,
     PlatformCommercialAccount,
     PlatformConfiguration,
     PlatformFeature,
@@ -96,6 +97,7 @@ __all__ = [
     "LedgerEntry",
     "Location",
     "Organization",
+    "OrganizationKey",
     "PlatformCommercialAccount",
     "PlatformConfiguration",
     "PlatformFeature",

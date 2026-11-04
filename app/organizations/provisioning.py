@@ -114,6 +114,11 @@ async def provision(name, organization_id=None, slug=None, region="CA", database
                                 updated_by="provisioning",
                             )
                         )
+                # Create the wrapped tenant DEK as part of provisioning so an
+                # active organization never depends on a first-request race.
+                from app.core.key_management import ensure_tenant_key
+
+                await ensure_tenant_key(org.id, created_by="provisioning")
                 await backfill_legacy_configuration(org)
                 # Activation is separate so onboarding can atomically create the location and invite first.
                 org._provision_created = created_here

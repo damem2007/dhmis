@@ -72,7 +72,14 @@ async def tenant_session(schema: str, database_alias: str = "primary"):
 # Handle organization session for this module.
 @asynccontextmanager
 async def organization_session(organization):
-    async with tenant_session(
-        organization.schema_name, getattr(organization, "database_alias", "primary")
-    ) as session:
-        yield session
+    # Resolve the tenant DEK before opening the tenant schema.  The context is
+    # task-local so SQLAlchemy encrypted fields and messaging routes use the
+    # same key for the lifetime of this organization session.
+    from app.core.key_management import load_tenant_key, use_tenant_key
+
+    material = await load_tenant_key(organization.id)
+    with use_tenant_key(material):
+        async with tenant_session(
+            organization.schema_name, getattr(organization, "database_alias", "primary")
+        ) as session:
+            yield session

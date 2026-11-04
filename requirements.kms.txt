@@ -1,0 +1,7 @@
+# Optional production key-provider SDKs. Install only the provider selected by
+# KEY_PROVIDER; the base requirements do not pull cloud SDKs into local tests.
+boto3
+google-cloud-kms
+azure-identity
+azure-keyvault-keys
+hvac

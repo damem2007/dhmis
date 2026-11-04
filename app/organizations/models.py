@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, Record
@@ -36,6 +36,30 @@ class Organization(Record, Base):
     front_office_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     booking_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     patient_portal_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class OrganizationKey(Record, Base):
+    """Wrapped tenant data-encryption key held in the control plane.
+
+    The plaintext DEK is never persisted.  ``wrapped_key`` is usable only by
+    the configured key provider, and ``recovery_metadata`` contains operational
+    state without key material.
+    """
+
+    __tablename__ = "organization_keys"
+    __table_args__ = {"schema": "dhmis_control"}
+    organization_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("dhmis_control.organizations.id"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(40), default="local")
+    # ``key_version`` identifies the tenant DEK used by application ciphertext.
+    key_version: Mapped[str] = mapped_column(String(80), default="v1")
+    # Provider versions identify the wrapping-key/envelope version. Keeping it
+    # separate lets us rotate a tenant DEK without changing a cloud KMS key.
+    provider_version: Mapped[str] = mapped_column(String(80), default="v1")
+    wrapped_key: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    recovery_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class PlatformCommercialAccount(Record, Base):

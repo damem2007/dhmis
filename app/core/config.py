@@ -16,7 +16,27 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr
     bootstrap_key: SecretStr
     demo_password: SecretStr
-    vault_key: SecretStr
+    # Legacy wrapping key retained for dual-read migration and local tests.
+    vault_key: SecretStr | None = None
+    key_provider: str = "local"
+    key_provider_version: str = "v1"
+    # AWS KMS can use the default boto3 credential chain; these identify the
+    # customer-managed key and region without placing credentials in config.
+    kms_key_id: str = ""
+    kms_region: str = ""
+    aws_kms_key_id: str = ""
+    aws_kms_region: str = ""
+    # Google Cloud KMS uses Application Default Credentials and a full key
+    # resource name, for example projects/.../cryptoKeys/....
+    gcp_kms_key_name: str = ""
+    # Azure uses DefaultAzureCredential and a Key Vault key URL.
+    azure_key_vault_key_url: str = ""
+    # Vault Transit uses a token supplied through a secret manager at runtime.
+    vault_transit_addr: str = ""
+    vault_transit_mount: str = "transit"
+    vault_transit_key: str = ""
+    vault_transit_token: SecretStr | None = None
+    vault_transit_namespace: str = ""
     redis_url: str = "redis://127.0.0.1:6379/0"
     oidc_issuer: str = ""
     oidc_audience: str = ""
