@@ -9,7 +9,8 @@ from app.identity.models import StaffUser
 from app.integrations.contracts import IntegrationFailure, MessageRequest
 from app.integrations.registry import resolve
 from app.notifications.models import OutboxMessage
-from app.organizations.configuration import render_communication_template
+from app.organizations.configuration import communication_template_deliveries, render_communication_template
+from app.organizations.recipient_timezones import format_recipient_datetime
 from app.patients.models import Patient
 from app.scheduling.models import Appointment
 
@@ -68,10 +69,11 @@ async def dispatch(db, actor, now=None):
             "patient.verification",
             "staff.invitation",
             "staff.password-reset",
+            "organization.domain-verification",
             "communication-template.test",
             "billing.installment-due",
             "billing.installment-overdue",
-        }:
+        } or (message.kind == "appointment.reminder" and message.payload.get("body")):
             channel = message.payload.get("channel", "email")
             request = MessageRequest(
                 idempotency_key=message.idempotency_key,
@@ -109,7 +111,7 @@ async def dispatch(db, actor, now=None):
                     user_id=message.payload.get("user_id", ""),
                     sandbox=message.result.get("sandbox", False),
                 )
-            except IntegrationFailure as error:
+            except (IntegrationFailure, KeyError, ValueError) as error:
                 message.status = "failed" if message.attempts >= 5 else "retry"
                 message.due_at = now + timedelta(seconds=30 * 2**message.attempts)
                 message.result = {"error": str(error)}
@@ -127,29 +129,35 @@ async def dispatch(db, actor, now=None):
             continue
         patient = await db.get(Patient, appointment.patient_id)
         template = actor.settings.communication_templates.get("appointment-reminder", {})
-        preferred_channel = template.get("channel", "email")
-        channel = (
-            preferred_channel
-            if (preferred_channel == "email" and patient.email)
-            or (preferred_channel == "sms" and patient.phone)
-            else "email" if patient.email else "sms"
+        matching_delivery = next(
+            (
+                (candidate_channel, candidate_template)
+                for candidate_channel, candidate_template in communication_template_deliveries(template)
+                if (patient.email if candidate_channel == "email" else patient.phone)
+            ),
+            None,
         )
-        destination = patient.email if channel == "email" else patient.phone
-        if not destination:
+        if matching_delivery is None:
             message.status = "failed"
             message.result = {"error": "Missing contact destination"}
             failed += 1
             continue
+        channel, channel_template = matching_delivery
+        destination = patient.email if channel == "email" else patient.phone
         provider = await db.get(StaffUser, appointment.provider_id) if appointment.provider_id else None
+        appointment_timestamp = format_recipient_datetime(
+            appointment.starts_at, appointment.timezone
+        )
+        appointment_date, appointment_time = appointment_timestamp.rsplit(" at ", 1)
         subject, body = render_communication_template(
-            template,
+            channel_template,
             {
                 "clinic_name": actor.organization.name,
                 "clinic_phone": actor.settings.public_content.get("contact_phone", "the clinic"),
                 "patient_first_name": patient.first_name,
                 "provider_name": provider.name if provider else "your provider",
-                "appointment_date": appointment.starts_at.strftime("%B %-d, %Y"),
-                "appointment_time": appointment.starts_at.strftime("%-I:%M %p"),
+                "appointment_date": appointment_date,
+                "appointment_time": appointment_time,
             },
         )
         request = MessageRequest(

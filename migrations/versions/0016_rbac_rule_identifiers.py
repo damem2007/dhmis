@@ -1,7 +1,4 @@
-"""Preserve approved governance rule identifiers without truncation."""
-
-import sqlalchemy as sa
-from alembic import context, op
+"""Reserve the published rule key separately from its UUID primary key."""
 
 revision = "0016"
 down_revision = "0015"
@@ -11,27 +8,12 @@ depends_on = None
 
 # Run the upgrade entry point for this module.
 def upgrade():
-    schema = context.config.attributes["schema"]
-    prefix = "platform" if schema == "dhmis_control" else "tenant"
-    for suffix in ("four_eyes_rules", "sod_rules"):
-        op.alter_column(
-            f"{prefix}_{suffix}",
-            "id",
-            type_=sa.String(80),
-            existing_type=sa.String(36),
-            schema=schema,
-        )
+    # Fresh installations receive UUID primary keys and a separate ``key``
+    # column from migration 0015.  This revision remains in the chain so an
+    # updated history can be replayed without introducing a second migration.
+    return
 
 
 # Run the downgrade entry point for this module.
 def downgrade():
-    schema = context.config.attributes["schema"]
-    prefix = "platform" if schema == "dhmis_control" else "tenant"
-    for suffix in ("four_eyes_rules", "sod_rules"):
-        op.alter_column(
-            f"{prefix}_{suffix}",
-            "id",
-            type_=sa.String(36),
-            existing_type=sa.String(80),
-            schema=schema,
-        )
+    return

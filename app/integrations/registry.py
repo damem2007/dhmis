@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.integrations.contracts import (
     AccountingExporter,
     ClaimsNetwork,
+    DomainDnsProvider,
     GeocodingProvider,
     IntegrationFailure,
     MapProvider,
@@ -59,6 +60,9 @@ CONTRACTS = {
     "accounting_exporter": AccountingExporter,
     "geocoding_provider": GeocodingProvider,
     "map_provider": MapProvider,
+    # No DNS provider is built in. A live provider must be supplied through a
+    # reviewed integration plugin and explicitly configured by Platform Admin.
+    "domain_dns_provider": DomainDnsProvider,
 }
 REGISTRY = {capability: {} for capability in CONTRACTS}
 
@@ -182,10 +186,10 @@ from app.integrations.email_providers import MailjetEmailProvider, SMTPEmailProv
 
 register_provider("email_provider", "smtp", SMTPEmailProvider)
 register_provider("email_provider", "mailjet", MailjetEmailProvider)
-register_provider("geocoding_provider", "nominatim", NominatimGeocodingProvider, sandbox=True)
+register_provider("geocoding_provider", "nominatim", NominatimGeocodingProvider)
 register_provider("geocoding_provider", "tomtom", TomTomGeocodingProvider)
-register_provider("geocoding_provider", "photon", PhotonGeocodingProvider, sandbox=True)
-register_provider("geocoding_provider", "overpass-addresses", OverpassAddressProvider, sandbox=True)
-register_provider("geocoding_provider", "postal-aware", PostalAwareGeocodingProvider, sandbox=True)
+register_provider("geocoding_provider", "photon", PhotonGeocodingProvider)
+register_provider("geocoding_provider", "overpass-addresses", OverpassAddressProvider)
+register_provider("geocoding_provider", "postal-aware", PostalAwareGeocodingProvider)
 register_provider("map_provider", "openstreetmap", OpenStreetMapProvider)
 register_provider("map_provider", "tomtom", TomTomMapProvider)

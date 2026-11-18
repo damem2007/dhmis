@@ -10,9 +10,10 @@ depends_on = None
 
 
 # Handle record columns for this module.
-def record_columns():
+def record_columns(id_type=sa.String(36)):
+    id_default = sa.text("gen_random_uuid()") if isinstance(id_type, sa.Uuid) else None
     return [
-        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("id", id_type, primary_key=True, server_default=id_default),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("created_by", sa.String(100), nullable=False, server_default="migration-0012"),
@@ -27,7 +28,8 @@ def upgrade():
         return
     op.create_table(
         "platform_configuration",
-        *record_columns(),
+        *record_columns(id_type=sa.Uuid(as_uuid=False)),
+        sa.Column("name", sa.String(80), nullable=False, unique=True),
         sa.Column("default_visibility", sa.String(20), nullable=False, server_default="organization"),
         sa.Column("default_policy", sa.JSON(), nullable=False, server_default="{}"),
         sa.Column("communication_templates", sa.JSON(), nullable=False, server_default="{}"),

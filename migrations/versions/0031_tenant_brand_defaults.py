@@ -36,9 +36,12 @@ def upgrade():
             SET branding = CAST((CAST(:defaults AS jsonb) || COALESCE(branding::jsonb, '{{}}'::jsonb)) AS json),
                 logo_url = COALESCE(NULLIF(logo_url, ''), :logo),
                 updated_by = 'tenant-brand-defaults-migration'
-            WHERE id = 'organization-settings'
+            WHERE name = 'organization-settings'
             """
-        ).bindparams(defaults=DEFAULT_BRANDING, logo=DEFAULT_LOGO_URL)
+        ).bindparams(
+            defaults=DEFAULT_BRANDING,
+            logo=DEFAULT_LOGO_URL,
+        )
     )
 
 

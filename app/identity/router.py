@@ -30,7 +30,7 @@ from app.identity.password_policy import (
 )
 from app.identity.recovery import issue_password_reset_and_deliver, revoke_staff_sessions
 from app.identity.security import digest, vault, verify_totp
-from app.identity.service import Actor, current_actor, db_session, issue_token, staff_user_available
+from app.identity.service import Actor, current_actor, db_session, issue_token, renew_token, staff_user_available
 from app.organizations.tenant_resolution import organization_from_login
 from app.organizations.configuration import tenant_settings
 
@@ -180,7 +180,7 @@ async def login(body: Login, request: Request):
         "challenge_token": raw,
         "mfa_required": True,
         "enrollment_required": enrollment,
-        "expires_in": 300,
+        "expires_in": settings().challenge_token_ttl,
         "organization_id": org.id,
         "tenant_slug": org.slug,
     }
@@ -233,7 +233,12 @@ async def verify(body: CodeInput):
         challenge.used = True
         access = await issue_token(db, user, org)
         audit(db, user.id, "auth.success", "staff", user.id)
-    return {"access_token": access, "token_type": "bearer", "expires_in": settings().staff_session_ttl_seconds}
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+        "expires_in": settings().staff_session_ttl_seconds,
+        "idle_timeout_seconds": settings().staff_idle_timeout_seconds,
+    }
 
 
 # Handle logout for this module.
@@ -243,6 +248,26 @@ async def logout(db=Depends(db_session), actor: Actor = Depends(current_actor)):
     session.revoked = True
     audit(db, actor.user_id, "auth.logout", "staff", actor.user_id)
     return {"revoked": True}
+
+
+@router.post("/session/refresh")
+async def refresh_session(db=Depends(db_session), actor: Actor = Depends(current_actor)):
+    """Renew one staff JWT after a deliberate, in-product user confirmation."""
+
+    user = await db.get(StaffUser, actor.user_id)
+    if user is None:
+        raise HTTPException(401, "Valid staff session required")
+    try:
+        access = await renew_token(db, user, actor.organization, actor.session_id)
+    except ValueError:
+        raise HTTPException(401, "Valid staff session required") from None
+    audit(db, actor.user_id, "auth.session.refresh", "staff", user.id)
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+        "expires_in": settings().staff_session_ttl_seconds,
+        "idle_timeout_seconds": settings().staff_idle_timeout_seconds,
+    }
 
 
 # Handle me for this module.

@@ -38,6 +38,9 @@ from app.platform_identity.service import (
     platform_or_bootstrap,
     issue_platform_token,
     platform_audit,
+    renew_platform_token,
+    PLATFORM_IDLE_TIMEOUT_SECONDS,
+    PLATFORM_SESSION_TTL_SECONDS,
 )
 from app.platform_identity.delivery import enqueue_platform_email
 from app.organizations.configuration import platform_configuration
@@ -399,7 +402,33 @@ async def verify(body: VerifyInput):
             await seed_platform_super_admin(db, user.id)
         access = await issue_platform_token(db, user)
         platform_audit(db, user.id, "platform.auth.success")
-    return {"access_token": access, "token_type": "bearer", "expires_in": 1800}
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+        "expires_in": PLATFORM_SESSION_TTL_SECONDS,
+        "idle_timeout_seconds": PLATFORM_IDLE_TIMEOUT_SECONDS,
+    }
+
+
+@router.post("/session/refresh")
+async def refresh_session(actor: PlatformActor = Depends(current_platform)):
+    """Renew one platform JWT after the operator explicitly chooses to continue."""
+
+    async with control_session() as db:
+        user = await db.get(PlatformUser, actor.user_id)
+        if user is None:
+            raise HTTPException(401, "Valid platform operator session required")
+        try:
+            access = await renew_platform_token(db, user, actor.session_id)
+        except ValueError:
+            raise HTTPException(401, "Valid platform operator session required") from None
+        platform_audit(db, actor.user_id, "platform.auth.session.refresh")
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+        "expires_in": PLATFORM_SESSION_TTL_SECONDS,
+        "idle_timeout_seconds": PLATFORM_IDLE_TIMEOUT_SECONDS,
+    }
 
 
 # Handle me for this module.

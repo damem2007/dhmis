@@ -55,13 +55,13 @@ def upgrade() -> None:
     # custom rules. Choose a free priority if the configured baseline number
     # is already occupied.
     if "tenant_four_eyes_rules" in tables:
-        rule_id = "missing-tooth-return"
+        rule_key = "missing-tooth-return"
         exists = bind.execute(
             sa.text(
                 f'''SELECT 1 FROM "{schema}".tenant_four_eyes_rules
-                    WHERE id = :rule_id'''
+                    WHERE key = :rule_key'''
             ),
-            {"rule_id": rule_id},
+            {"rule_key": rule_key},
         ).first()
         if exists is None:
             priorities = {
@@ -76,13 +76,14 @@ def upgrade() -> None:
             bind.execute(
                 sa.text(
                     f'''INSERT INTO "{schema}".tenant_four_eyes_rules
-                        (id, name, scope, priority, patterns, created_at, updated_at,
+                        (id, key, name, scope, priority, patterns, created_at, updated_at,
                          created_by, updated_by)
-                        VALUES (:id, :name, :scope, :priority, CAST(:patterns AS json),
+                        VALUES (:id, :key, :name, :scope, :priority, CAST(:patterns AS json),
                                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, :actor, :actor)'''
                 ),
                 {
-                    "id": rule_id,
+                    "id": str(uuid4()),
+                    "key": rule_key,
                     "name": "Missing tooth return",
                     "scope": "Tenant",
                     "priority": priority,

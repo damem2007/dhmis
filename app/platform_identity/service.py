@@ -13,6 +13,8 @@ from app.platform_identity.models import PlatformAuditEvent, PlatformSession, Pl
 from app.rbac.models import PlatformRole
 
 platform_bearer = HTTPBearer(auto_error=False)
+PLATFORM_SESSION_TTL_SECONDS = 1800
+PLATFORM_IDLE_TIMEOUT_SECONDS = 900
 
 
 # Defines the platform actor model, contract, or value object.
@@ -51,7 +53,7 @@ def platform_audit(db, actor_id, action, *, organization_id=None, reason="", det
 # Create or issue issue platform token while applying existing validation and authorization.
 async def issue_platform_token(db, user: PlatformUser):
     now = int(time.time())
-    session = PlatformSession(user_id=user.id, expires=now + 1800, last_active=now)
+    session = PlatformSession(user_id=user.id, expires=now + PLATFORM_SESSION_TTL_SECONDS, last_active=now)
     db.add(session)
     await db.flush()
     return jwt.encode(
@@ -63,7 +65,37 @@ async def issue_platform_token(db, user: PlatformUser):
             "aud": "dhmis-platform",
             "iss": "dhmis",
             "iat": now,
-            "exp": now + 1800,
+            "exp": now + PLATFORM_SESSION_TTL_SECONDS,
+        },
+        settings().jwt_secret.get_secret_value(),
+        algorithm="HS256",
+    )
+
+
+async def renew_platform_token(db, user: PlatformUser, session_id: str):
+    """Extend the current authenticated platform session and rotate its JWT."""
+
+    now = int(time.time())
+    session = await db.get(PlatformSession, session_id)
+    if (
+        session is None
+        or session.user_id != user.id
+        or session.revoked
+        or session.expires <= now
+    ):
+        raise ValueError("Session is no longer available")
+    session.expires = now + PLATFORM_SESSION_TTL_SECONDS
+    session.last_active = now
+    return jwt.encode(
+        {
+            "sub": user.id,
+            "sid": session.id,
+            "ver": user.token_version,
+            "amr": ["pwd", "otp"],
+            "aud": "dhmis-platform",
+            "iss": "dhmis",
+            "iat": now,
+            "exp": now + PLATFORM_SESSION_TTL_SECONDS,
         },
         settings().jwt_secret.get_secret_value(),
         algorithm="HS256",
@@ -103,7 +135,7 @@ async def current_platform(
                 or session.user_id != user.id
                 or session.revoked
                 or session.expires <= now
-                or session.last_active < now - 900
+                or session.last_active < now - PLATFORM_IDLE_TIMEOUT_SECONDS
             ):
                 raise ValueError()
             session.last_active = now

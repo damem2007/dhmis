@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
-from app.rbac.bootstrap import APPROVAL_POLICY_ID, default_approval_policy
+from app.rbac.bootstrap import default_approval_policy
 from app.rbac.management import clear_unmet_dependents, is_protected_role
 from app.rbac.policy import (
     ApprovalDecision,
@@ -41,7 +41,8 @@ def approval_policy_from_settings(values: dict | None) -> ApprovalPolicy:
 
 # Retrieve load approval policy for the current request or workflow.
 async def load_approval_policy(db, model) -> ApprovalPolicy:
-    row = await db.get(model, APPROVAL_POLICY_ID)
+    domain = "platform" if model.__tablename__.startswith("platform_") else "tenant"
+    row = await db.scalar(select(model).where(model.name == f"{domain}-approval-policy"))
     if row is None:
         raise RuntimeError("RBAC approval policy has not been seeded")
     return approval_policy_from_settings(row.settings)
@@ -57,11 +58,7 @@ def grant_json(grant: Grant | None):
         "conditions": {
             "step_up_mfa_minutes": grant.conditions.step_up_mfa_minutes,
             "requires_approval": grant.conditions.requires_approval,
-            "expires_at": (
-                grant.conditions.expires_at.isoformat()
-                if grant.conditions.expires_at
-                else None
-            ),
+            "expires_at": (grant.conditions.expires_at.isoformat() if grant.conditions.expires_at else None),
             "ip_allow_list": list(grant.conditions.ip_allow_list),
         }
         if grant.conditions
@@ -135,9 +132,7 @@ async def create_runtime_action_request(
             return row, False
     policy = await load_approval_policy(db, policy_model)
     eligible_roles = (
-        policy.tenant_eligible_roles
-        if permission.domain is Domain.TENANT
-        else policy.platform_eligible_roles
+        policy.tenant_eligible_roles if permission.domain is Domain.TENANT else policy.platform_eligible_roles
     )
     approval_permission = f"{permission.resource_key}.approve"
     if approval_permission not in context.permissions:
@@ -269,11 +264,7 @@ async def authorize_runtime_action(
     maker_id: str,
     request_model,
 ):
-    row = await db.scalar(
-        select(request_model)
-        .where(request_model.id == request_id)
-        .with_for_update()
-    )
+    row = await db.scalar(select(request_model).where(request_model.id == request_id).with_for_update())
     if row is None:
         raise HTTPException(404, "Approval request not found")
     if row.kind != "runtime-action" or row.runtime_permission_key != permission_key:
@@ -313,14 +304,16 @@ async def apply_governance_request(
 ):
     patch = request_row.patch[0]
     if request_row.kind == "approval-policy":
-        policy = await db.get(policy_model, APPROVAL_POLICY_ID)
+        policy = await db.scalar(
+            select(policy_model).where(policy_model.name == f"{request_row.domain}-approval-policy")
+        )
         if policy is None:
             raise HTTPException(409, "Approval policy has not been seeded")
         policy.settings = {**default_approval_policy(), **patch["settings"]}
         policy.updated_by = request_row.maker_id
     elif request_row.kind == "four-eyes-rules":
         desired = {item["id"]: item for item in patch["rules"]}
-        current = {row.id: row for row in (await db.scalars(select(rule_model))).all()}
+        current = {row.key: row for row in (await db.scalars(select(rule_model))).all()}
         for identifier, row in current.items():
             if identifier not in desired:
                 await db.delete(row)
@@ -331,7 +324,7 @@ async def apply_governance_request(
             row = current.get(identifier)
             if row is None:
                 row = rule_model(
-                    id=identifier,
+                    key=identifier,
                     created_by=request_row.maker_id,
                     updated_by=request_row.maker_id,
                 )
@@ -477,8 +470,7 @@ async def create_role_change_request(
             {
                 "message": "Role grants are invalid",
                 "issues": [
-                    {"key": issue.key, "code": issue.code.value, "message": issue.message}
-                    for issue in issues
+                    {"key": issue.key, "code": issue.code.value, "message": issue.message} for issue in issues
                 ],
             },
         )
@@ -489,7 +481,9 @@ async def create_role_change_request(
     # The context entry was replaced above; compare to persistence for the true before-state.
     before = {
         row.permission_key: Grant(
-            GrantEffect(row.effect), Scope(row.scope), grant_from_json(
+            GrantEffect(row.effect),
+            Scope(row.scope),
+            grant_from_json(
                 {"effect": row.effect, "scope": row.scope, "conditions": row.conditions}
             ).conditions,
         )
@@ -543,9 +537,7 @@ async def create_role_change_request(
             }
     policy = await load_approval_policy(db, policy_model)
     changed_permissions = [
-        context.permissions[change.key]
-        for change in changes
-        if change.key in context.permissions
+        context.permissions[change.key] for change in changes if change.key in context.permissions
     ]
     approval_required = requires_approval(
         changed_permissions,
@@ -557,9 +549,7 @@ async def create_role_change_request(
     )
     risk = max((int(permission.risk) for permission in changed_permissions), default=1)
     affected_users = await db.scalar(
-        select(func.count(func.distinct(assignment_model.user_id))).where(
-            assignment_model.role_id == role.id
-        )
+        select(func.count(func.distinct(assignment_model.user_id))).where(assignment_model.role_id == role.id)
     )
     row = request_model(
         domain=role.domain,
@@ -578,7 +568,9 @@ async def create_role_change_request(
         approval_context={
             "approval_permission": approval_permission,
             "scope": approval_scope or {},
-        } if approval_permission else {},
+        }
+        if approval_permission
+        else {},
         created_by=maker_id,
         updated_by=maker_id,
     )
@@ -639,9 +631,7 @@ async def apply_role_request(
         return False
     current = {
         row.permission_key: row
-        for row in (
-            await db.scalars(select(grant_model).where(grant_model.role_id == role.id))
-        ).all()
+        for row in (await db.scalars(select(grant_model).where(grant_model.role_id == role.id))).all()
     }
     change_log = []
     for item in request_row.patch:
@@ -689,9 +679,7 @@ async def apply_role_request(
             change_log.append({"publish": True})
     role.version += 1
     role.updated_by = request_row.maker_id
-    next_version = (
-        await db.scalar(select(func.max(version_model.version))) or 0
-    ) + 1
+    next_version = (await db.scalar(select(func.max(version_model.version))) or 0) + 1
     db.add(
         version_model(
             version=next_version,
@@ -733,9 +721,7 @@ async def decide_request(
 ):
     del request_model
     existing = (
-        await db.scalars(
-            select(decision_model).where(decision_model.request_id == request_row.id)
-        )
+        await db.scalars(select(decision_model).where(decision_model.request_id == request_row.id))
     ).all()
     policy = await load_approval_policy(db, policy_model)
     model_request = _policy_request(request_row, existing, domain)
@@ -769,10 +755,7 @@ async def decide_request(
     )
     request_row.status = model_request.status.value
     request_row.updated_by = actor_id
-    if (
-        request_row.kind == "runtime-action"
-        and model_request.status is RequestStatus.APPLIED
-    ):
+    if request_row.kind == "runtime-action" and model_request.status is RequestStatus.APPLIED:
         request_row.status = RequestStatus.APPROVED.value
         await db.flush()
         return request_row

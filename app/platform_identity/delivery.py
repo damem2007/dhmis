@@ -10,7 +10,11 @@ from app.core.database import control_session
 from app.integrations.configuration import platform_adapter_names
 from app.integrations.contracts import IntegrationFailure, MessageRequest
 from app.integrations.registry import resolve
-from app.organizations.configuration import platform_configuration, render_communication_template
+from app.organizations.configuration import (
+    communication_template_deliveries,
+    platform_configuration,
+    render_communication_template,
+)
 from app.platform_identity.models import PlatformOutboxMessage
 from app.platform_identity.service import platform_audit
 
@@ -75,7 +79,11 @@ async def enqueue_platform_email(
     action = "invite" if kind == "platform.invitation" else "reset"
     configuration = await platform_configuration(db)
     template = configuration.communication_templates.get(template_key, {})
-    if not template.get("active") or template.get("channel") != "email":
+    email_template = next(
+        (content for channel, content in communication_template_deliveries(template) if channel == "email"),
+        None,
+    )
+    if email_template is None:
         raise IntegrationFailure(f"Platform {template_key} email template is not active")
     values = {
         "clinic_name": "DHMIS Platform",
@@ -84,7 +92,7 @@ async def enqueue_platform_email(
         **(template_values or {}),
     }
     subject, body = render_communication_template(
-        template,
+        email_template,
         {**values, token_key: platform_action_url(action, raw_token)},
     )
     # A customized template must never leak a literal token to an end user.

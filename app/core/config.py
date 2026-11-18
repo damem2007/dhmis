@@ -45,15 +45,16 @@ class Settings(BaseSettings):
     provider_options: Annotated[dict, NoDecode] = {}
     database_aliases: Annotated[dict[str, SecretStr], NoDecode] = {}
     environment: str = "development"
-    staff_session_ttl_seconds: int = 28800
-    staff_idle_timeout_seconds: int = 3600
+    challenge_token_ttl: int = Field(default=300, gt=0)
+    staff_session_ttl_seconds: int = Field(default=28800, gt=0)
+    staff_idle_timeout_seconds: int = Field(default=3600, gt=0)
     # Roles & Access reads these values from the backend metadata endpoint so
     # every client uses the same refresh cadence and module batch size.
     rbac_catalogue_check_interval_seconds: int = Field(default=60, ge=15, le=3600)
     rbac_catalogue_modules_per_page: int = Field(default=5, ge=1, le=50)
-    platform_public_url: str = "http://platform.dhmis.local:8080" #"http://192.168.1.68:5172"
-    tenant_admin_public_url_template: str = "http://admin.{tenant_slug}.dhmis.local:5175"
-    tenant_public_url_template: str = "http://{tenant_slug}.dhmis.local:8080"
+    platform_public_url: str = "http://platform.dhmis.test:8080" #"http://192.168.1.68:5172"
+    tenant_admin_public_url_template: str = "http://admin.{tenant_slug}.dhmis.test:5175"
+    tenant_public_url_template: str = "http://{tenant_slug}.dhmis.test:8080"
     cors_origins: list[str] = [
         "http://localhost:5172",
         "http://localhost:5173",

@@ -9,25 +9,23 @@ from app.rbac.bootstrap import seed_platform_super_admin
 from app.rbac.registry import synchronize_permission_registry
 from app.regions.service import ensure_region_registry
 
-
 # These values are the approved platform adapter baseline. Existing platform
 # operator overrides are preserved; setup only fills a missing default row.
 PLATFORM_ADAPTER_DEFAULTS = (
-    ("adapter-default-01", "*", "payment_gateway", "sandbox"),
-    ("adapter-default-02", "*", "signature_provider", "sandbox"),
-    ("adapter-default-03", "*", "messaging_provider", "sandbox"),
-    ("adapter-default-04", "*", "email_provider", "mailjet"),
-    ("adapter-default-05", "*", "sms_provider", "sandbox"),
-    ("adapter-default-06", "*", "accounting_exporter", "sandbox"),
-    ("adapter-default-07", "CA", "claims_network", "Sandbox1_CDAnet"),
-    ("adapter-default-08", "US", "claims_network", "Sandbox2_USAdapter"),
-    ("adapter-default-geocoding", "*", "geocoding_provider", "tomtom"),
-    ("adapter-default-map", "*", "map_provider", "openstreetmap"),
+    ("*", "payment_gateway", "sandbox"),
+    ("*", "signature_provider", "sandbox"),
+    ("*", "messaging_provider", "sandbox"),
+    ("*", "email_provider", "mailjet"),
+    ("*", "sms_provider", "sandbox"),
+    ("*", "accounting_exporter", "sandbox"),
+    ("CA", "claims_network", "Sandbox1_CDAnet"),
+    ("US", "claims_network", "Sandbox2_USAdapter"),
+    ("*", "geocoding_provider", "tomtom"),
+    ("*", "map_provider", "openstreetmap"),
 )
 
 PLATFORM_PLANS = (
     {
-        "id": "platform-plan-solo",
         "code": "solo",
         "name": "Solo",
         "description": "One dentist, one location.",
@@ -39,7 +37,6 @@ PLATFORM_PLANS = (
         "features": ["Charting and treatment plans", "Recalls and reminders", "Patient portal"],
     },
     {
-        "id": "platform-plan-clinic",
         "code": "clinic",
         "name": "Clinic",
         "description": "Up to 8 providers.",
@@ -51,7 +48,6 @@ PLATFORM_PLANS = (
         "features": ["Everything in Solo", "Billing and claims", "Reports and analytics"],
     },
     {
-        "id": "platform-plan-group",
         "code": "group",
         "name": "Group",
         "description": "Multiple locations with enterprise controls.",
@@ -65,35 +61,144 @@ PLATFORM_PLANS = (
 )
 
 PLATFORM_FEATURES = (
-    ("module.charting", "Charting and treatment plans", "Clinical workflows and treatment planning.", "clinical", "boolean", ""),
-    ("module.recalls", "Recalls and reminders", "Recall schedules and automated patient reminders.", "engagement", "boolean", ""),
-    ("module.patient_portal", "Patient portal", "Patient forms, messages, plans and payments.", "portal", "boolean", ""),
-    ("module.billing", "Billing and claims", "Invoices, ledger and claims workflows.", "financial", "boolean", ""),
-    ("module.reports", "Reports and analytics", "Operational, financial and provider reporting.", "analytics", "boolean", ""),
-    ("module.sso_audit", "SSO and audit log", "Single sign-on and advanced audit controls.", "security", "boolean", ""),
-    ("module.api", "API, webhooks and sandbox", "Developer API access, webhooks and sandbox tooling.", "developer", "boolean", ""),
-    ("limit.locations", "Locations", "Maximum locations available to a tenant.", "limits", "limit", "locations"),
+    (
+        "module.charting",
+        "Charting and treatment plans",
+        "Clinical workflows and treatment planning.",
+        "clinical",
+        "boolean",
+        "",
+    ),
+    (
+        "module.recalls",
+        "Recalls and reminders",
+        "Recall schedules and automated patient reminders.",
+        "engagement",
+        "boolean",
+        "",
+    ),
+    (
+        "module.patient_portal",
+        "Patient portal",
+        "Patient forms, messages, plans and payments.",
+        "portal",
+        "boolean",
+        "",
+    ),
+    (
+        "module.billing",
+        "Billing and claims",
+        "Invoices, ledger and claims workflows.",
+        "financial",
+        "boolean",
+        "",
+    ),
+    (
+        "module.reports",
+        "Reports and analytics",
+        "Operational, financial and provider reporting.",
+        "analytics",
+        "boolean",
+        "",
+    ),
+    (
+        "module.sso_audit",
+        "SSO and audit log",
+        "Single sign-on and advanced audit controls.",
+        "security",
+        "boolean",
+        "",
+    ),
+    (
+        "module.api",
+        "API, webhooks and sandbox",
+        "Developer API access, webhooks and sandbox tooling.",
+        "developer",
+        "boolean",
+        "",
+    ),
+    (
+        "limit.locations",
+        "Locations",
+        "Maximum locations available to a tenant.",
+        "limits",
+        "limit",
+        "locations",
+    ),
+    (
+        "module.appointment_widget",
+        "Appointment widget",
+        "Embeddable appointment booking for tenant-owned websites.",
+        "engagement",
+        "boolean",
+        "",
+    ),
+    ("experience.tenant_website", "Tenant website", "Public clinic website.", "experience", "boolean", ""),
+    (
+        "capability.appointment_booking",
+        "Online appointment booking",
+        "Allow patients to create appointments through enabled patient channels.",
+        "engagement",
+        "boolean",
+        "",
+    ),
+    (
+        "limit.appointment_widget_origins",
+        "Appointment widget origins",
+        "Maximum approved website origins for the Appointment Widget.",
+        "limits",
+        "limit",
+        "origins",
+    ),
 )
 
 PLAN_FEATURES = {
-    "solo": {"module.charting", "module.recalls", "module.patient_portal"},
-    "clinic": {"module.charting", "module.recalls", "module.patient_portal", "module.billing", "module.reports"},
-    "group": {"module.charting", "module.recalls", "module.patient_portal", "module.billing", "module.reports", "module.sso_audit", "module.api"},
+    "solo": {
+        "module.charting",
+        "module.recalls",
+        "module.patient_portal",
+        "module.appointment_widget",
+        "experience.tenant_website",
+        "capability.appointment_booking",
+        "limit.appointment_widget_origins",
+    },
+    "clinic": {
+        "module.charting",
+        "module.recalls",
+        "module.patient_portal",
+        "module.billing",
+        "module.reports",
+        "module.appointment_widget",
+        "experience.tenant_website",
+        "capability.appointment_booking",
+        "limit.appointment_widget_origins",
+    },
+    "group": {
+        "module.charting",
+        "module.recalls",
+        "module.patient_portal",
+        "module.billing",
+        "module.reports",
+        "module.sso_audit",
+        "module.api",
+        "module.appointment_widget",
+        "experience.tenant_website",
+        "capability.appointment_booking",
+        "limit.appointment_widget_origins",
+    },
 }
 
 
 # Ensure approved platform adapter defaults without overwriting operator changes.
 async def ensure_platform_adapter_defaults(db, actor_id: str = "platform-setup"):
     existing = {
-        (row.region, row.capability)
-        for row in (await db.scalars(select(PlatformAdapterDefault))).all()
+        (row.region, row.capability) for row in (await db.scalars(select(PlatformAdapterDefault))).all()
     }
-    for row_id, region, capability, provider_name in PLATFORM_ADAPTER_DEFAULTS:
+    for region, capability, provider_name in PLATFORM_ADAPTER_DEFAULTS:
         if (region, capability) in existing:
             continue
         db.add(
             PlatformAdapterDefault(
-                id=row_id,
                 region=region,
                 capability=capability,
                 provider_name=provider_name,
@@ -109,24 +214,24 @@ async def ensure_platform_adapter_defaults(db, actor_id: str = "platform-setup")
 
 # Ensure approved platform plans, features and their assignments.
 async def ensure_platform_catalogue(db, actor_id: str = "platform-setup"):
-    plans = {
-        row.code: row for row in (await db.scalars(select(PlatformPlan))).all()
-    }
+    plans = {row.code: row for row in (await db.scalars(select(PlatformPlan))).all()}
     for values in PLATFORM_PLANS:
         if values["code"] not in plans:
-            row = PlatformPlan(**values, active=True, created_by=actor_id, updated_by=actor_id)
+            row = PlatformPlan(
+                **values,
+                active=True,
+                created_by=actor_id,
+                updated_by=actor_id,
+            )
             db.add(row)
             plans[row.code] = row
     await db.flush()
 
-    features = {
-        row.key: row for row in (await db.scalars(select(PlatformFeature))).all()
-    }
-    for index, (key, name, description, category, feature_type, unit) in enumerate(PLATFORM_FEATURES, start=1):
+    features = {row.key: row for row in (await db.scalars(select(PlatformFeature))).all()}
+    for key, name, description, category, feature_type, unit in PLATFORM_FEATURES:
         if key in features:
             continue
         row = PlatformFeature(
-            id=f"platform-feature-{index:02d}",
             key=key,
             name=name,
             description=description,
@@ -142,8 +247,7 @@ async def ensure_platform_catalogue(db, actor_id: str = "platform-setup"):
     await db.flush()
 
     existing = {
-        (row.plan_id, row.feature_id)
-        for row in (await db.scalars(select(PlatformPlanFeature))).all()
+        (row.plan_id, row.feature_id) for row in (await db.scalars(select(PlatformPlanFeature))).all()
     }
     feature_keys = {key for key, *_ in PLATFORM_FEATURES}
     for plan_code, enabled_keys in PLAN_FEATURES.items():
@@ -154,13 +258,15 @@ async def ensure_platform_catalogue(db, actor_id: str = "platform-setup"):
             if identity in existing:
                 continue
             is_location_limit = key == "limit.locations"
+            is_widget_origin_limit = key == "limit.appointment_widget_origins"
             db.add(
                 PlatformPlanFeature(
-                    id=f"{plan_code}-{key.replace('.', '-')}",
                     plan_id=plan.id,
                     feature_id=feature.id,
                     enabled=True,
-                    value=(None if plan_code == "group" else {"solo": 1, "clinic": 3}[plan_code]) if is_location_limit else None,
+                    value=(None if plan_code == "group" else {"solo": 1, "clinic": 3}[plan_code])
+                    if is_location_limit
+                    else (1 if is_widget_origin_limit else None),
                     unlimited=plan_code == "group" if is_location_limit else False,
                     included_quantity=None,
                     public_label="",

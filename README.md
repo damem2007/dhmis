@@ -84,6 +84,37 @@ To discard disposable development schemas and rebuild the canonical demonstratio
 
 `reset-development` is destructive and development-only. It drops `dhmis_control`, `dhmis_template`, and provisioned `dhmis_t_*` schemas, reapplies migrations, and recreates the demonstration organization with setup configuration only.
 
+### Historical UUID migration replay (development only)
+
+The migration history now creates UUID primary keys for the seeded platform
+catalogue/configuration records and tenant configuration/governance records.
+Human-readable values remain in business columns: plan `code`, feature `key`,
+and governance-rule `key`. They are not database primary keys.
+
+Before replaying this edited history, create a complete PostgreSQL backup. The
+script is read-only and does not print connection credentials:
+
+```bash
+cd Backend
+DHMIS_BACKUP_DATABASE_URL="$DATABASE_URL" \
+  bash scripts/backup-database-before-schema-rebuild.sh
+```
+
+Validate the generated dump before any destructive development reset:
+
+```bash
+pg_restore --list backups/dhmis-before-uuid-history-rebuild-*.dump >/dev/null
+.venv/bin/python -m app.cli reset-development
+```
+
+Do **not** replay edited historical migrations against a database that has
+already recorded the old migration versions. Alembic will not revisit those
+versions, and changing an applied primary-key type requires a reviewed forward
+data migration. The no-new-migration approach is therefore limited to a clean
+development database (or a new database restored from verified source data).
+Staging and production must retain the backup and use an approved forward
+migration/change window before their existing varchar primary keys can change.
+
 Load the excluded demonstration records explicitly, after `bootstrap` or `reset-development`:
 
 ```bash
@@ -150,8 +181,11 @@ production key custody.
 Before opening staging traffic:
 
 1. Apply the schema chain with `.venv/bin/python -m app.cli migrate` and confirm
-   migrations `0060_tenant_key_management` and `0061_provider_key_version` are at the current head for the
-   control plane, template and every onboarded tenant.
+   that the current head—including `0060_tenant_key_management`,
+   `0061_provider_key_version`, `0062_plan_visibility_addons`,
+   `0063_commercial_domains`, and
+   `0064_disable_legacy_optional_plan_features`—is applied for the control
+   plane, template, and every onboarded tenant.
 2. Run `.venv/bin/python -m app.cli key-health` and verify that the provider is
    `local`, `ready` is `true`, and no key material is printed.
 3. Provision a disposable test Organization and confirm that its
@@ -226,6 +260,64 @@ Run the operational commands only inside an approved change window:
 .venv/bin/python -m app.cli rotate-tenant-keys
 .venv/bin/python -m app.cli recovery-test
 ```
+
+### Commercial plans and tenant-routing release checks
+
+Before enabling the domain-routing and commercial-plan release in staging or
+production:
+
+1. Run `.venv/bin/python -m app.cli migrate`; do not apply individual
+   migrations directly. `0063` adds structured domain requests, hosts,
+   verification state, activation history, priced add-on products, and
+   immutable refund links. `0064` disables only migration-created optional
+   legacy plan features so every legacy plan is Back Office-only until a plan
+   operator authors a validated bundle. The edited `0063` domain-host
+   constraint includes the managed Back Office fallback role for a clean
+   migration replay; an existing deployed database needs a reviewed forward
+   migration before that stored role can be added.
+2. In **Billing → Plans**, validate each plan before it can be assigned or
+   published. Public self-onboarding accepts only an active, validated plan
+   with public availability enabled. Private curated plans remain assignable
+   by Platform Admin but are not returned by the public plan endpoint.
+3. Configure Appointment Widget pricing as a named add-on product. A tenant
+   add-on purchase uses its configured price and external-origin allowance;
+   it produces its own append-only SaaS ledger entry. Refunds append negative
+   reversal entries and never mutate historic charges.
+4. Install the one-time edge routes for public custom hosts and derived
+   `admin.<customer-domain>` Back Office hosts. The proxy must preserve
+   `Host` and forward `/v1/` to FastAPI. See
+   [`docs/custom-domain-routing-proposal.md`](../docs/custom-domain-routing-proposal.md)
+   for the generic proxy pattern. Do not add a server block for each tenant.
+5. Exercise managed, pending-custom, active-custom, Back Office-only,
+   Portal-plus-Widget, and Widget-only cases in staging. A custom request is
+   tenant-owned: Platform Admin can monitor, resend the tenant-administrator
+   notification, cancel, or suspend it, but cannot prove ownership.
+
+The backend validates manual DNS TXT and HTTPS-file proofs. It also exposes a
+`domain_dns_provider` integration contract and a tenant-controlled automatic
+TXT-record setup endpoint. DHMIS intentionally includes no guessed DNS vendor
+or customer-zone credential flow. Automatic setup is visible only after a
+reviewed provider plugin is installed, selected in **Settings → Integrations**,
+and authorised for the customer's zone. Provider setup never activates a
+domain by itself: the tenant must still run the independent verification check
+and wait for DNS/TLS propagation.
+
+### Database-backed integration tests
+
+The full pytest suite provisions schemas and tenant fixtures, so it must not
+target a shared staging or production `DATABASE_URL`. Run it through the
+isolated local PostgreSQL harness:
+
+```bash
+cd Backend
+./scripts/run-integration-tests.sh
+```
+
+The script starts `docker-compose.integration.yml`, accepts only a loopback
+`DHMIS_TEST_DATABASE_URL`, runs pytest with that URL as the child process's
+`DATABASE_URL`, and tears down the disposable volume afterward. Docker is
+needed only for the default disposable database; an already-running loopback
+test database may be supplied through `DHMIS_TEST_DATABASE_URL`.
 
 Start the API:
 

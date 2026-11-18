@@ -1,5 +1,7 @@
 """Move clinic-owned runtime configuration into tenant schemas."""
 
+from uuid import uuid4
+
 import sqlalchemy as sa
 from alembic import context, op
 
@@ -10,9 +12,10 @@ depends_on = None
 
 
 # Handle record columns for this module.
-def record_columns():
+def record_columns(id_type=sa.String(36)):
+    id_default = sa.text("gen_random_uuid()") if isinstance(id_type, sa.Uuid) else None
     return [
-        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("id", id_type, primary_key=True, server_default=id_default),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("created_by", sa.String(100), nullable=False, server_default="system"),
@@ -42,7 +45,7 @@ def upgrade():
         )
         op.create_table(
             "platform_adapter_defaults",
-            *record_columns(),
+            *record_columns(id_type=sa.Uuid(as_uuid=False)),
             sa.Column("region", sa.String(10), nullable=False, server_default="*"),
             sa.Column("capability", sa.String(80), nullable=False),
             sa.Column("provider_name", sa.String(120), nullable=False),
@@ -88,7 +91,7 @@ def upgrade():
         ]
         table = sa.table(
             "platform_adapter_defaults",
-            sa.column("id", sa.String),
+            sa.column("id", sa.Uuid(as_uuid=False)),
             sa.column("region", sa.String),
             sa.column("capability", sa.String),
             sa.column("provider_name", sa.String),
@@ -100,7 +103,7 @@ def upgrade():
             table,
             [
                 {
-                    "id": f"adapter-default-{index:02d}",
+                    "id": str(uuid4()),
                     "region": region,
                     "capability": capability,
                     "provider_name": provider,
@@ -143,7 +146,8 @@ def upgrade():
 
     op.create_table(
         "tenant_settings",
-        *record_columns(),
+        *record_columns(id_type=sa.Uuid(as_uuid=False)),
+        sa.Column("name", sa.String(80), nullable=False, unique=True),
         sa.Column("visibility", sa.String(20), nullable=False, server_default="organization"),
         sa.Column("branding", sa.JSON(), nullable=False, server_default="{}"),
         sa.Column("policy", sa.JSON(), nullable=False, server_default="{}"),
@@ -159,29 +163,31 @@ def upgrade():
         sa.text(
             f"""
             INSERT INTO "{schema}".tenant_settings
-                (id, visibility, branding, policy, jurisdiction_policy, public_content,
+                (id, name, visibility, branding, policy, jurisdiction_policy, public_content,
                  communication_templates, operational_thresholds, booking_widget,
                  migration_state, created_by, updated_by)
             VALUES
-                ('organization-settings', 'organization', CAST(:branding AS JSON),
+                -- ``settings_id`` arrives as a string from Python. Cast it
+                -- at the SQL boundary because the rebuilt primary key is a
+                -- native PostgreSQL UUID rather than varchar(36).
+                (CAST(:settings_id AS UUID), 'organization-settings', 'organization', CAST(:branding AS JSON),
                  CAST(:policy AS json),
                  CAST(:jurisdiction_policy as json), CAST(:public_content as json), CAST(:communication_templates as json), CAST(:operational_thresholds as json), CAST(:booking_widget as json),
                  cast(:migration_state as json), 'migration', 'migration')
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (name) DO NOTHING
             """
         ).bindparams(
-        branding="{}",
-        policy='{"cancellation_notice_hours":24,"cancellation_fee_cents":0,"buffer_minutes":0,"reminder_hours":24}',
-        jurisdiction_policy="{}",
-        public_content="{}",
-        communication_templates='{"appointment-reminder":{"name":"Appointment reminder","channel":"email","subject":"Appointment reminder from {{clinic_name}}","body":"Hi {{patient_first_name}}, your appointment is {{appointment_date}} at {{appointment_time}}. Call {{clinic_phone}} if you need to make a change.","active":true},"installment-due-soon":{"name":"Installment due soon","channel":"email","subject":"Payment installment due from {{clinic_name}}","body":"Hi {{patient_first_name}}, {{installment_amount}} is due on {{due_date}}. Remaining plan balance: {{plan_balance}}.","active":true},"installment-overdue":{"name":"Installment overdue","channel":"email","subject":"Payment installment overdue at {{clinic_name}}","body":"Hi {{patient_first_name}}, {{installment_amount}} was due on {{due_date}}. Remaining plan balance: {{plan_balance}}. Call {{clinic_phone}} if you need help.","active":true},"staff-invitation":{"name":"Staff invitation","channel":"email","subject":"Your invitation to {{clinic_name}}","body":"Hi {{recipient_name}},\\n\\nYou have been invited to join {{clinic_name}} as {{role}}.\\n\\nAccept your invitation: {{invitation_link}}\\n\\nThis link expires {{invitation_expires_at}} ({{invitation_expires_in}}). If you were not expecting this message, contact {{clinic_name}} support.","active":true},"password-reset":{"name":"Password reset","channel":"email","subject":"Reset your {{clinic_name}} password","body":"Hi {{recipient_name}}, use this one-time link to reset your password: {{reset_link}}","active":true}}',
-        operational_thresholds="{}",
-        booking_widget="{}",
-        migration_state='{"legacy_control_backfilled":false}',
+            settings_id=str(uuid4()),
+            branding="{}",
+            policy='{"cancellation_notice_hours":24,"cancellation_fee_cents":0,"buffer_minutes":0,"reminder_hours":24}',
+            jurisdiction_policy="{}",
+            public_content="{}",
+            communication_templates='{"appointment-reminder":{"name":"Appointment reminder","channel":"email","subject":"Appointment reminder from {{clinic_name}}","body":"Hi {{patient_first_name}}, your appointment is {{appointment_date}} at {{appointment_time}}. Call {{clinic_phone}} if you need to make a change.","active":true},"installment-due-soon":{"name":"Installment due soon","channel":"email","subject":"Payment installment due from {{clinic_name}}","body":"Hi {{patient_first_name}}, {{installment_amount}} is due on {{due_date}}. Remaining plan balance: {{plan_balance}}.","active":true},"installment-overdue":{"name":"Installment overdue","channel":"email","subject":"Payment installment overdue at {{clinic_name}}","body":"Hi {{patient_first_name}}, {{installment_amount}} was due on {{due_date}}. Remaining plan balance: {{plan_balance}}. Call {{clinic_phone}} if you need help.","active":true},"staff-invitation":{"name":"Staff invitation","channel":"email","subject":"Your invitation to {{clinic_name}}","body":"Hi {{recipient_name}},\\n\\nYou have been invited to join {{clinic_name}} as {{role}}.\\n\\nAccept your invitation: {{invitation_link}}\\n\\nThis link expires {{invitation_expires_at}} ({{invitation_expires_in}}). If you were not expecting this message, contact {{clinic_name}} support.","active":true},"password-reset":{"name":"Password reset","channel":"email","subject":"Reset your {{clinic_name}} password","body":"Hi {{recipient_name}}, use this one-time link to reset your password: {{reset_link}}","active":true}}',
+            operational_thresholds="{}",
+            booking_widget="{}",
+            migration_state='{"legacy_control_backfilled":false}',
+        )
     )
-    )
-
-
 # Run the downgrade entry point for this module.
 def downgrade():
     raise RuntimeError("Use a reviewed forward migration")

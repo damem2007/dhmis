@@ -61,6 +61,7 @@ async def appointment_widget_script():
 
 @app.get("/widgets/appointments-frame.html", include_in_schema=False)
 async def appointment_widget_frame():
+    """Serve the isolated appointment-widget frame loaded by the embed script."""
     return FileResponse(
         Path(__file__).resolve().parent / "widgets" / "assets" / "appointments-frame.html",
         media_type="text/html",

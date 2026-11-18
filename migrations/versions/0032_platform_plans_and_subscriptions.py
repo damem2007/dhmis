@@ -1,5 +1,7 @@
 """Add the platform-owned plan catalogue and tenant subscriptions."""
 
+from uuid import uuid4
+
 import sqlalchemy as sa
 from alembic import context, op
 
@@ -10,9 +12,10 @@ depends_on = None
 
 
 # Handle record columns for this module.
-def record_columns():
+def record_columns(id_type=sa.String(36)):
+    id_default = sa.text("gen_random_uuid()") if isinstance(id_type, sa.Uuid) else None
     return [
-        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("id", id_type, primary_key=True, server_default=id_default),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("created_by", sa.String(100), nullable=False, server_default="system"),
@@ -28,7 +31,7 @@ def upgrade():
 
     op.create_table(
         "platform_plans",
-        *record_columns(),
+        *record_columns(id_type=sa.Uuid(as_uuid=False)),
         sa.Column("code", sa.String(80), nullable=False, unique=True),
         sa.Column("name", sa.String(120), nullable=False),
         sa.Column("description", sa.String(500), nullable=False, server_default=""),
@@ -47,7 +50,7 @@ def upgrade():
         "platform_subscriptions",
         *record_columns(),
         sa.Column("organization_id", sa.String(36), nullable=False, unique=True),
-        sa.Column("plan_id", sa.String(36), nullable=False),
+        sa.Column("plan_id", sa.Uuid(as_uuid=False), nullable=False),
         sa.Column("status", sa.String(30), nullable=False, server_default="trialing"),
         sa.Column("trial_ends_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("current_period_start", sa.DateTime(timezone=True), nullable=True),
@@ -62,7 +65,7 @@ def upgrade():
 
     table = sa.table(
         "platform_plans",
-        sa.column("id", sa.String),
+        sa.column("id", sa.Uuid(as_uuid=False)),
         sa.column("code", sa.String),
         sa.column("name", sa.String),
         sa.column("description", sa.String),
@@ -81,7 +84,7 @@ def upgrade():
         table,
         [
             {
-                "id": "platform-plan-solo",
+                "id": str(uuid4()),
                 "code": "solo",
                 "name": "Solo",
                 "description": "One dentist, one location.",
@@ -96,7 +99,7 @@ def upgrade():
                 "updated_by": "migration",
             },
             {
-                "id": "platform-plan-clinic",
+                "id": str(uuid4()),
                 "code": "clinic",
                 "name": "Clinic",
                 "description": "Up to 8 providers.",
@@ -111,7 +114,7 @@ def upgrade():
                 "updated_by": "migration",
             },
             {
-                "id": "platform-plan-group",
+                "id": str(uuid4()),
                 "code": "group",
                 "name": "Group",
                 "description": "Multiple locations with enterprise controls.",

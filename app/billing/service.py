@@ -1,5 +1,5 @@
 import calendar
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, timedelta
 from typing import Literal
 
 from fastapi import HTTPException
@@ -12,8 +12,10 @@ from app.core.repository import add, required
 from app.integrations.contracts import IntegrationFailure, PaymentRequest
 from app.integrations.registry import resolve
 from app.notifications.models import OutboxMessage
-from app.organizations.configuration import render_communication_template
+from app.organizations.configuration import communication_template_deliveries, render_communication_template
 from app.organizations.jurisdiction import jurisdiction
+from app.organizations.models import Location
+from app.organizations.recipient_timezones import local_delivery_time
 from app.patients.models import Patient
 
 
@@ -69,9 +71,8 @@ async def create_payment_plan(
         actor.user_id,
     )
     patient = await db.get(Patient, invoice.patient_id)
+    location = await db.get(Location, invoice.location_id)
     if patient and (patient.email or patient.phone):
-        channel = "email" if patient.email else "sms"
-        destination = patient.email or patient.phone
         for index, installment in enumerate(schedule):
             due = date.fromisoformat(installment["due"])
             values = {
@@ -87,9 +88,16 @@ async def create_payment_plan(
                 ("installment-overdue", "billing.installment-overdue", due + timedelta(days=1)),
             ):
                 template = actor.settings.communication_templates[template_key]
-                subject, body = render_communication_template(template, values)
-                db.add(
-                    OutboxMessage(
+                for channel, channel_template in communication_template_deliveries(template):
+                    destination = patient.email if channel == "email" else patient.phone
+                    if not destination:
+                        # Never reuse an email address as an SMS/WhatsApp
+                        # destination. A channel only dispatches where the
+                        # patient has a destination for that channel.
+                        continue
+                    subject, body = render_communication_template(channel_template, values)
+                    db.add(
+                        OutboxMessage(
                         kind=kind,
                         payload={
                             "destination": destination,
@@ -99,12 +107,15 @@ async def create_payment_plan(
                             "patient_id": patient.id,
                             "invoice_id": invoice.id,
                         },
-                        due_at=datetime.combine(send_date, time(9), tzinfo=timezone.utc),
-                        idempotency_key=f"{kind}:{row.id}:{index}",
+                        due_at=local_delivery_time(
+                            send_date,
+                            location.timezone if location is not None else "America/Vancouver",
+                        ),
+                        idempotency_key=f"{kind}:{row.id}:{index}:{channel}",
                         created_by=actor.user_id,
                         updated_by=actor.user_id,
+                        )
                     )
-                )
     audit(
         db,
         actor.user_id,

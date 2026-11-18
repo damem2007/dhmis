@@ -21,7 +21,6 @@ from app.rbac.registry import load_approved_registry
 
 PLATFORM_SUPER_ADMIN_ROLE_ID = "platform-super-admin"
 TENANT_SUPER_ADMIN_ROLE_ID = "tenant-super-admin"
-APPROVAL_POLICY_ID = "approval-policy"
 
 
 # Handle default approval policy for this module.
@@ -59,19 +58,21 @@ async def seed_rbac_governance(db, domain: str, actor_id: str = "rbac-bootstrap"
             TenantSoDRule,
         )
         scopes = {"Tenant", "Both"}
-    if await db.get(policy_model, APPROVAL_POLICY_ID) is None:
+    policy_name = f"{domain}-approval-policy"
+    existing_policy = await db.scalar(select(policy_model).where(policy_model.name == policy_name))
+    if existing_policy is None:
         db.add(
             policy_model(
-                id=APPROVAL_POLICY_ID,
+                name=policy_name,
                 settings=default_approval_policy(),
                 created_by=actor_id,
                 updated_by=actor_id,
             )
         )
-    existing_rules = set(await db.scalars(select(rule_model.id)))
+    existing_rules = set(await db.scalars(select(rule_model.key)))
     db.add_all(
         rule_model(
-            id=item["id"],
+            key=item["id"],
             name=item["name"],
             scope=item["scope"],
             priority=item["priority"],
@@ -82,10 +83,10 @@ async def seed_rbac_governance(db, domain: str, actor_id: str = "rbac-bootstrap"
         for item in approved.raw["fourEyesRules"]
         if item["scope"] in scopes and item["id"] not in existing_rules
     )
-    existing_sod = set(await db.scalars(select(sod_model.id)))
+    existing_sod = set(await db.scalars(select(sod_model.key)))
     db.add_all(
         sod_model(
-            id=item["id"],
+            key=item["id"],
             message=item["message"],
             side_a=item["sideA"],
             side_b=item["sideB"],
@@ -106,9 +107,7 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
     registry = load_approved_registry()
     definition = default_platform_role_definitions().get(PLATFORM_SUPER_ADMIN_ROLE_ID)
     if definition is None:
-        raise ValueError(
-            f"default_roles.json must define {PLATFORM_SUPER_ADMIN_ROLE_ID!r}"
-        )
+        raise ValueError(f"default_roles.json must define {PLATFORM_SUPER_ADMIN_ROLE_ID!r}")
     configured_modules = set(definition.get("modules", ()))
     active_platform_modules = {
         permission.resource_key.split(".", 1)[0]
@@ -118,14 +117,12 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
     unknown_modules = configured_modules - active_platform_modules
     if unknown_modules:
         raise ValueError(
-            "Platform Super Admin references unknown platform modules: "
-            + ", ".join(sorted(unknown_modules))
+            "Platform Super Admin references unknown platform modules: " + ", ".join(sorted(unknown_modules))
         )
     missing_modules = active_platform_modules - configured_modules
     if missing_modules:
         raise ValueError(
-            "default_roles.json is missing active platform modules: "
-            + ", ".join(sorted(missing_modules))
+            "default_roles.json is missing active platform modules: " + ", ".join(sorted(missing_modules))
         )
     role = await db.get(PlatformRole, PLATFORM_SUPER_ADMIN_ROLE_ID)
     if role is None:
@@ -147,7 +144,9 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
     # role editing.
     existing_grants = {
         row.permission_key
-        for row in (await db.scalars(select(PlatformRoleGrant).where(PlatformRoleGrant.role_id == role.id))).all()
+        for row in (
+            await db.scalars(select(PlatformRoleGrant).where(PlatformRoleGrant.role_id == role.id))
+        ).all()
     }
     db.add_all(
         PlatformRoleGrant(
@@ -188,9 +187,7 @@ async def seed_platform_super_admin(db, actor_id: str = "rbac-bootstrap") -> Pla
         ).all()
     assigned = set(
         await db.scalars(
-            select(PlatformRoleAssignment.user_id).where(
-                PlatformRoleAssignment.role_id == role.id
-            )
+            select(PlatformRoleAssignment.user_id).where(PlatformRoleAssignment.role_id == role.id)
         )
     )
     db.add_all(
@@ -228,11 +225,7 @@ async def ensure_tenant_super_admin_grants(
     registry = load_approved_registry()
     existing_grants = {
         row.permission_key
-        for row in (
-            await db.scalars(
-                select(TenantRoleGrant).where(TenantRoleGrant.role_id == role.id)
-            )
-        ).all()
+        for row in (await db.scalars(select(TenantRoleGrant).where(TenantRoleGrant.role_id == role.id))).all()
     }
     added = False
     for permission in registry.permissions.values():
@@ -287,11 +280,7 @@ async def ensure_platform_super_admin_grants(
     existing_grants = {
         row.permission_key
         for row in (
-            await db.scalars(
-                select(PlatformRoleGrant).where(
-                    PlatformRoleGrant.role_id == role.id
-                )
-            )
+            await db.scalars(select(PlatformRoleGrant).where(PlatformRoleGrant.role_id == role.id))
         ).all()
     }
     added = False
@@ -332,11 +321,7 @@ async def seed_tenant_super_admin(
 ) -> TenantRole:
     from app.rbac.default_roles import seed_default_tenant_roles, sync_legacy_assignments
 
-    default_roles = (
-        await seed_default_tenant_roles(db, actor_id)
-        if include_default_roles
-        else {}
-    )
+    default_roles = await seed_default_tenant_roles(db, actor_id) if include_default_roles else {}
     await seed_rbac_governance(db, "tenant", actor_id)
     role = await db.get(TenantRole, TENANT_SUPER_ADMIN_ROLE_ID)
     if role is None:
@@ -360,9 +345,7 @@ async def seed_tenant_super_admin(
         role.name = "Tenant Super Admin"
         role.status = "published"
         role.locked = True
-        role.description = (
-            "Locked tenant role with every active reviewed tenant permission."
-        )
+        role.description = "Locked tenant role with every active reviewed tenant permission."
         role.updated_by = actor_id
     # The protected setup role is intentionally broader than the editable
     # default roles. Keep its canonical grants synchronized with every active
@@ -381,7 +364,8 @@ async def seed_tenant_super_admin(
     if assign_first_legacy_admin:
         legacy_admins = (
             await db.scalars(
-                select(StaffLocationAssignment).where(
+                select(StaffLocationAssignment)
+                .where(
                     StaffLocationAssignment.active,
                     StaffLocationAssignment.scope == "organization",
                     StaffLocationAssignment.role == default_role_name(),

@@ -5,9 +5,8 @@ tenant schemas are updated only when they still have the empty migration
 default, so tenant-owned customisations are preserved.
 """
 
-from alembic import context, op
 import sqlalchemy as sa
-
+from alembic import context, op
 
 revision = "0028_tenant_defaults"
 down_revision = "0027_staff_lifecycle"
@@ -31,7 +30,7 @@ DEFAULT_COMMUNICATION_TEMPLATES = (
     '"staff-invitation":{"name":"Staff invitation","channel":"email",'
     '"subject":"Your invitation to {{clinic_name}}",'
     '"body":"Hi {{recipient_name}},\\n\\nYou have been invited to join {{clinic_name}} as {{role}}.\\n\\n'
-    'Accept your invitation: {{invitation_link}}\\n\\nThis link expires {{invitation_expires_at}} '
+    "Accept your invitation: {{invitation_link}}\\n\\nThis link expires {{invitation_expires_at}} "
     '({{invitation_expires_in}}). If you were not expecting this message, contact {{clinic_name}} support.",'
     '"active":true},'
     '"password-reset":{"name":"Password reset","channel":"email",'
@@ -53,10 +52,12 @@ def upgrade():
             UPDATE "{schema}".tenant_settings
             SET communication_templates = CAST(:templates AS json),
                 updated_by = 'tenant-defaults-migration'
-            WHERE id = 'organization-settings'
+            WHERE name = 'organization-settings'
               AND communication_templates::jsonb = '{{}}'::jsonb
             """
-        ).bindparams(templates=DEFAULT_COMMUNICATION_TEMPLATES)
+        ).bindparams(
+            templates=DEFAULT_COMMUNICATION_TEMPLATES,
+        )
     )
     # Older schemas marked every seeded role as locked. The tenant Super Admin
     # is the only protected role; all operational roles remain editable.

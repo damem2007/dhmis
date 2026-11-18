@@ -1,4 +1,6 @@
-from sqlalchemy import JSON, Boolean, String, UniqueConstraint
+from uuid import uuid4
+
+from sqlalchemy import JSON, Boolean, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, Record
@@ -11,6 +13,7 @@ class PlatformAdapterDefault(Record, Base):
         UniqueConstraint("region", "capability"),
         {"schema": "dhmis_control"},
     )
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     region: Mapped[str] = mapped_column(String(10), default="*")
     capability: Mapped[str] = mapped_column(String(80))
     provider_name: Mapped[str] = mapped_column(String(120))

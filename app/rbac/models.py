@@ -1,6 +1,18 @@
 from datetime import datetime
+from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, Record
@@ -145,9 +157,7 @@ class TenantRoleAssignment(Record, Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("tenant.staff_users.id"))
     role_id: Mapped[str] = mapped_column(ForeignKey("tenant.tenant_roles.id"))
     level: Mapped[str] = mapped_column(String(20))
-    location_id: Mapped[str | None] = mapped_column(
-        ForeignKey("tenant.locations.id"), nullable=True
-    )
+    location_id: Mapped[str | None] = mapped_column(ForeignKey("tenant.locations.id"), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -184,9 +194,7 @@ class PlatformChangeDecision(Record, Base):
         Index("uq_platform_change_decision", "request_id", "user_id", unique=True),
         {"schema": "dhmis_control"},
     )
-    request_id: Mapped[str] = mapped_column(
-        ForeignKey("dhmis_control.platform_change_requests.id")
-    )
+    request_id: Mapped[str] = mapped_column(ForeignKey("dhmis_control.platform_change_requests.id"))
     user_id: Mapped[str] = mapped_column(String(36))
     decision: Mapped[str] = mapped_column(String(10))
     comment: Mapped[str] = mapped_column(String(2000), default="")
@@ -201,9 +209,7 @@ class PlatformChangeNotificationReceipt(Record, Base):
         {"schema": "dhmis_control"},
     )
     user_id: Mapped[str] = mapped_column(String(36), index=True)
-    request_id: Mapped[str] = mapped_column(
-        ForeignKey("dhmis_control.platform_change_requests.id")
-    )
+    request_id: Mapped[str] = mapped_column(ForeignKey("dhmis_control.platform_change_requests.id"))
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
@@ -223,6 +229,8 @@ class PlatformPolicyVersion(Record, Base):
 class PlatformApprovalPolicy(Record, Base):
     __tablename__ = "platform_approval_policy"
     __table_args__ = {"schema": "dhmis_control"}
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(80), unique=True, default="platform-approval-policy")
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -233,7 +241,8 @@ class PlatformFourEyesRule(Record, Base):
         Index("uq_platform_four_eyes_priority", "priority", unique=True),
         {"schema": "dhmis_control"},
     )
-    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    key: Mapped[str] = mapped_column(String(80), unique=True)
     name: Mapped[str] = mapped_column(String(180))
     scope: Mapped[str] = mapped_column(String(20))
     priority: Mapped[int] = mapped_column(Integer)
@@ -244,7 +253,8 @@ class PlatformFourEyesRule(Record, Base):
 class PlatformSoDRule(Record, Base):
     __tablename__ = "platform_sod_rules"
     __table_args__ = {"schema": "dhmis_control"}
-    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    key: Mapped[str] = mapped_column(String(80), unique=True)
     message: Mapped[str] = mapped_column(String(1000))
     side_a: Mapped[list] = mapped_column(JSON, default=list)
     side_b: Mapped[list] = mapped_column(JSON, default=list)
@@ -298,9 +308,7 @@ class TenantChangeNotificationReceipt(Record, Base):
         {"schema": "tenant"},
     )
     user_id: Mapped[str] = mapped_column(String(36), index=True)
-    request_id: Mapped[str] = mapped_column(
-        ForeignKey("tenant.tenant_change_requests.id")
-    )
+    request_id: Mapped[str] = mapped_column(ForeignKey("tenant.tenant_change_requests.id"))
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
@@ -320,6 +328,8 @@ class TenantPolicyVersion(Record, Base):
 class TenantApprovalPolicy(Record, Base):
     __tablename__ = "tenant_approval_policy"
     __table_args__ = {"schema": "tenant"}
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(80), unique=True, default="tenant-approval-policy")
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -330,7 +340,8 @@ class TenantFourEyesRule(Record, Base):
         Index("uq_tenant_four_eyes_priority", "priority", unique=True),
         {"schema": "tenant"},
     )
-    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    key: Mapped[str] = mapped_column(String(80), unique=True)
     name: Mapped[str] = mapped_column(String(180))
     scope: Mapped[str] = mapped_column(String(20))
     priority: Mapped[int] = mapped_column(Integer)
@@ -341,7 +352,8 @@ class TenantFourEyesRule(Record, Base):
 class TenantSoDRule(Record, Base):
     __tablename__ = "tenant_sod_rules"
     __table_args__ = {"schema": "tenant"}
-    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    key: Mapped[str] = mapped_column(String(80), unique=True)
     message: Mapped[str] = mapped_column(String(1000))
     side_a: Mapped[list] = mapped_column(JSON, default=list)
     side_b: Mapped[list] = mapped_column(JSON, default=list)

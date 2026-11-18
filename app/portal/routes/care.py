@@ -117,6 +117,8 @@ async def reschedule_appointment(
     actor: PatientActor = Depends(current_patient),
     db=Depends(patient_db_session),
 ):
+    if not actor.organization.booking_enabled:
+        raise HTTPException(404, "Online appointment booking is not enabled")
     row = await required(db, Appointment, identifier)
     await require_patient_access(db, actor, row.patient_id)
     if body.patient_id != row.patient_id:

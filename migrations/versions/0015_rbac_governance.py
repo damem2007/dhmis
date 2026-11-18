@@ -10,9 +10,10 @@ depends_on = None
 
 
 # Handle record columns for this module.
-def record_columns(default="migration-0015"):
+def record_columns(default="migration-0015", id_type=sa.String(36)):
+    id_default = sa.text("gen_random_uuid()") if isinstance(id_type, sa.Uuid) else None
     return [
-        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("id", id_type, primary_key=True, server_default=id_default),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("created_by", sa.String(100), nullable=False, server_default=default),
@@ -50,9 +51,7 @@ def create_governance(schema: str, prefix: str):
         ["status", "expires_at"],
         schema=schema,
     )
-    op.create_index(
-        f"ix_{request_table}_maker_id", request_table, ["maker_id"], schema=schema
-    )
+    op.create_index(f"ix_{request_table}_maker_id", request_table, ["maker_id"], schema=schema)
     op.create_table(
         decision_table,
         *record_columns(),
@@ -94,13 +93,15 @@ def create_governance(schema: str, prefix: str):
     )
     op.create_table(
         f"{prefix}_approval_policy",
-        *record_columns(),
+        *record_columns(id_type=sa.Uuid(as_uuid=False)),
+        sa.Column("name", sa.String(80), nullable=False, unique=True),
         sa.Column("settings", sa.JSON(), nullable=False, server_default="{}"),
         schema=schema,
     )
     op.create_table(
         f"{prefix}_four_eyes_rules",
-        *record_columns(),
+        *record_columns(id_type=sa.Uuid(as_uuid=False)),
+        sa.Column("key", sa.String(80), nullable=False, unique=True),
         sa.Column("name", sa.String(180), nullable=False),
         sa.Column("scope", sa.String(20), nullable=False),
         sa.Column("priority", sa.Integer(), nullable=False),
@@ -116,7 +117,8 @@ def create_governance(schema: str, prefix: str):
     )
     op.create_table(
         f"{prefix}_sod_rules",
-        *record_columns(),
+        *record_columns(id_type=sa.Uuid(as_uuid=False)),
+        sa.Column("key", sa.String(80), nullable=False, unique=True),
         sa.Column("message", sa.String(1000), nullable=False),
         sa.Column("side_a", sa.JSON(), nullable=False, server_default="[]"),
         sa.Column("side_b", sa.JSON(), nullable=False, server_default="[]"),

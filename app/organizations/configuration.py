@@ -1,17 +1,25 @@
 from copy import deepcopy
 from datetime import UTC, datetime
 
+from sqlalchemy import select
+
 from app.core.database import control_session, organization_session
 from app.identity.password_policy import DEFAULT_PASSWORD_POLICY
 from app.organizations.models import Organization, PlatformConfiguration, TenantSettings
 
-SETTINGS_ID = "organization-settings"
-PLATFORM_SETTINGS_ID = "platform-defaults"
+# A singleton keeps an independent UUID primary key. Its human role is an
+# immutable business name that is safe to use for idempotent lookup.
+SETTINGS_NAME = "organization-settings"
+PLATFORM_SETTINGS_NAME = "platform-settings"
 DEFAULT_POLICY = {
     "cancellation_notice_hours": 24,
     "cancellation_fee_cents": 0,
     "buffer_minutes": 0,
     "reminder_hours": 24,
+    # The lifetime of staff and tenant-administrator invitation links. This is
+    # inherited from the platform default at provisioning and tenant-owned
+    # afterwards.
+    "invitation_expiry_hours": 24,
     # Clinics choose how configured discounts interact with insurance. The
     # four modes cover the standard invoice/line and pre/post-insurance cases.
     "discount_application_mode": "invoice_before_insurance",
@@ -39,67 +47,196 @@ DEFAULT_CLINICAL_CHART = {
     "dentition_age_ranges": {"primary_max_years": 11, "mixed_max_years": 21},
 }
 COMMUNICATION_TEMPLATE_VARIABLES = (
-    "clinic_name", "clinic_phone", "patient_first_name", "provider_name",
-    "appointment_date", "appointment_time", "installment_amount", "due_date",
-    "plan_balance", "recipient_name", "role", "tenant_slug", "platform_name",
-    "invitation_expires_at", "invitation_expires_in", "invitation_link", "reset_link",
+    "clinic_name",
+    "clinic_phone",
+    "patient_first_name",
+    "provider_name",
+    "appointment_date",
+    "appointment_time",
+    "installment_amount",
+    "due_date",
+    "plan_balance",
+    "recipient_name",
+    "role",
+    "tenant_slug",
+    "platform_name",
+    "invitation_expires_at",
+    "invitation_expires_in",
+    "invitation_link",
+    "reset_link",
 )
+COMMUNICATION_CHANNELS = ("email", "sms", "whatsapp")
+EMAIL_TEMPLATE_MAX_LENGTH = 12_000
+SMS_TEMPLATE_MAX_LENGTH = 480
+WHATSAPP_TEMPLATE_MAX_LENGTH = 4_096
+
+
+def _default_template(name: str, subject: str, body: str) -> dict:
+    """Create a channel-aware template while retaining legacy read fields.
+
+    ``channel``, ``subject`` and ``body`` remain in the JSON for older
+    callers and existing database rows. New callers must use
+    :func:`communication_template_deliveries` so each enabled channel gets
+    its own content and delivery record.
+    """
+
+    return {
+        "name": name,
+        "active": True,
+        "delivery_mode": "selected",
+        "selected_channels": ["email"],
+        "channels": {"email": {"subject": subject, "body": body, "signature": ""}},
+        "channel": "email",
+        "subject": subject,
+        "body": body,
+    }
+
+
 DEFAULT_COMMUNICATION_TEMPLATES = {
     "appointment-reminder": {
-        "name": "Appointment reminder",
-        "channel": "email",
-        "subject": "Appointment reminder from {{clinic_name}}",
-        "body": "Hi {{patient_first_name}}, your appointment is {{appointment_date}} at {{appointment_time}}. Call {{clinic_phone}} if you need to make a change.",
-        "active": True,
+        **_default_template(
+            "Appointment reminder",
+            "Appointment reminder from {{clinic_name}}",
+            "Hi {{patient_first_name}}, your appointment is {{appointment_date}} at {{appointment_time}}. Call {{clinic_phone}} if you need to make a change.",
+        ),
     },
     "installment-due-soon": {
-        "name": "Installment due soon",
-        "channel": "email",
-        "subject": "Payment installment due from {{clinic_name}}",
-        "body": "Hi {{patient_first_name}}, {{installment_amount}} is due on {{due_date}}. Remaining plan balance: {{plan_balance}}.",
-        "active": True,
+        **_default_template(
+            "Installment due soon",
+            "Payment installment due from {{clinic_name}}",
+            "Hi {{patient_first_name}}, {{installment_amount}} is due on {{due_date}}. Remaining plan balance: {{plan_balance}}.",
+        ),
     },
     "installment-overdue": {
-        "name": "Installment overdue",
-        "channel": "email",
-        "subject": "Payment installment overdue at {{clinic_name}}",
-        "body": "Hi {{patient_first_name}}, {{installment_amount}} was due on {{due_date}}. Remaining plan balance: {{plan_balance}}. Call {{clinic_phone}} if you need help.",
-        "active": True,
+        **_default_template(
+            "Installment overdue",
+            "Payment installment overdue at {{clinic_name}}",
+            "Hi {{patient_first_name}}, {{installment_amount}} was due on {{due_date}}. Remaining plan balance: {{plan_balance}}. Call {{clinic_phone}} if you need help.",
+        ),
     },
     "staff-invitation": {
-        "name": "Staff invitation",
-        "channel": "email",
-        "subject": "Your invitation to {{clinic_name}}",
-        "body": "Hi {{recipient_name}},\n\nYou have been invited to join {{clinic_name}} as {{role}}.\n\nAccept your invitation: {{invitation_link}}\n\nThis link expires {{invitation_expires_at}} ({{invitation_expires_in}}). If you were not expecting this message, contact {{clinic_name}} support.",
-        "active": True,
+        **_default_template(
+            "Staff invitation",
+            "Your invitation to {{clinic_name}}",
+            "Hi {{recipient_name}},\n\nYou have been invited to join {{clinic_name}} as {{role}}.\n\nAccept your invitation: {{invitation_link}}\n\nThis link expires {{invitation_expires_at}} ({{invitation_expires_in}}). If you were not expecting this message, contact {{clinic_name}} support.",
+        ),
     },
     "password-reset": {
-        "name": "Password reset",
-        "channel": "email",
-        "subject": "Reset your {{clinic_name}} password",
-        "body": "Hi {{recipient_name}}, use this one-time link to reset your password: {{reset_link}}",
-        "active": True,
+        **_default_template(
+            "Password reset",
+            "Reset your {{clinic_name}} password",
+            "Hi {{recipient_name}}, use this one-time link to reset your password: {{reset_link}}",
+        ),
     },
 }
-LEGACY_STAFF_INVITATION_BODY = "Hi {{recipient_name}}, use this secure link to accept your staff invitation: {{invitation_link}}"
+LEGACY_STAFF_INVITATION_BODY = (
+    "Hi {{recipient_name}}, use this secure link to accept your staff invitation: {{invitation_link}}"
+)
 
 
 # Handle render communication template for this module.
+def normalize_communication_template(template: dict) -> dict:
+    """Return the durable channel-aware representation of a template.
+
+    This accepts every deployed flat ``channel`` template so old tenant and
+    platform JSON remains usable without a data migration. The legacy fields
+    are retained as the first email (or selected) channel for integrations
+    that are upgraded independently.
+    """
+
+    source = deepcopy(template or {})
+    raw_channels = source.get("channels")
+    channels: dict[str, dict] = {}
+    if isinstance(raw_channels, dict):
+        for channel, content in raw_channels.items():
+            if channel not in COMMUNICATION_CHANNELS or not isinstance(content, dict):
+                continue
+            body = str(content.get("body", ""))
+            # Signatures used to be stored separately. Fold them into the
+            # rich email body during normalization so templates have one
+            # source of truth going forward.
+            signature = str(content.get("signature", "")) if channel == "email" else ""
+            if signature:
+                body = f"{body.rstrip()}\n\n{signature.strip()}"
+            channels[channel] = {
+                "subject": str(content.get("subject", "")) if channel == "email" else "",
+                "body": body,
+                "signature": "",
+            }
+    if not channels:
+        legacy_channel = source.get("channel", "email")
+        if legacy_channel not in COMMUNICATION_CHANNELS:
+            legacy_channel = "email"
+        channels[legacy_channel] = {
+            "subject": str(source.get("subject", "")) if legacy_channel == "email" else "",
+            "body": str(source.get("body", "")),
+            "signature": "",
+        }
+    selected = source.get("selected_channels")
+    if not isinstance(selected, list):
+        selected = [source.get("channel", "email")]
+    selected = [channel for channel in selected if channel in channels]
+    if not selected:
+        selected = [next(iter(channels))]
+    mode = source.get("delivery_mode", "selected")
+    if mode not in {"selected", "all_available"}:
+        mode = "selected"
+    primary = channels.get("email") or channels[selected[0]]
+    primary_channel = "email" if "email" in channels else selected[0]
+    return {
+        "name": str(source.get("name", "Communication template")),
+        "active": bool(source.get("active", True)),
+        "delivery_mode": mode,
+        "selected_channels": selected,
+        "channels": channels,
+        # Compatibility fields are deliberately read-only projections.
+        "channel": primary_channel,
+        "subject": primary.get("subject", ""),
+        "body": primary.get("body", ""),
+    }
+
+
+def normalize_communication_templates(templates: dict | None) -> dict:
+    return {
+        key: normalize_communication_template(value)
+        for key, value in (templates or {}).items()
+        if isinstance(value, dict)
+    }
+
+
+def communication_template_deliveries(template: dict) -> list[tuple[str, dict]]:
+    """Return configured channel templates in deterministic delivery order."""
+
+    normalized = normalize_communication_template(template)
+    if not normalized["active"]:
+        return []
+    channels = normalized["channels"]
+    keys = channels.keys() if normalized["delivery_mode"] == "all_available" else normalized["selected_channels"]
+    return [(channel, channels[channel]) for channel in keys if channel in channels]
+
+
 def render_communication_template(template: dict, values: dict[str, str]) -> tuple[str, str]:
     subject = template.get("subject", "")
     body = template.get("body", "")
     for key, value in values.items():
         subject = subject.replace("{{" + key + "}}", value)
         body = body.replace("{{" + key + "}}", value)
+    signature = template.get("signature", "")
+    for key, value in values.items():
+        signature = signature.replace("{{" + key + "}}", value)
+    if signature:
+        body = f"{body.rstrip()}\n\n{signature.strip()}"
     return subject, body
 
 
 # Handle platform configuration for this module.
 async def platform_configuration(db) -> PlatformConfiguration:
-    row = await db.get(PlatformConfiguration, PLATFORM_SETTINGS_ID)
+    row = await db.scalar(
+        select(PlatformConfiguration).where(PlatformConfiguration.name == PLATFORM_SETTINGS_NAME)
+    )
     if row is None:
         row = PlatformConfiguration(
-            id=PLATFORM_SETTINGS_ID,
+            name=PLATFORM_SETTINGS_NAME,
             default_visibility="organization",
             default_policy=deepcopy(DEFAULT_POLICY),
             password_policy=deepcopy(DEFAULT_PASSWORD_POLICY),
@@ -110,7 +247,7 @@ async def platform_configuration(db) -> PlatformConfiguration:
         db.add(row)
         await db.flush()
     else:
-        templates = deepcopy(row.communication_templates)
+        templates = normalize_communication_templates(row.communication_templates)
         changed = False
         default_policy = {**DEFAULT_POLICY, **(row.default_policy or {})}
         default_policy["password_policy"] = {
@@ -132,6 +269,8 @@ async def platform_configuration(db) -> PlatformConfiguration:
             ):
                 templates[key] = deepcopy(value)
                 changed = True
+        if templates != (row.communication_templates or {}):
+            changed = True
         if changed:
             row.communication_templates = templates
             await db.flush()
@@ -140,10 +279,10 @@ async def platform_configuration(db) -> PlatformConfiguration:
 
 # Handle tenant settings for this module.
 async def tenant_settings(db) -> TenantSettings:
-    row = await db.get(TenantSettings, SETTINGS_ID)
+    row = await db.scalar(select(TenantSettings).where(TenantSettings.name == SETTINGS_NAME))
     if row is None:
         row = TenantSettings(
-            id=SETTINGS_ID,
+            name=SETTINGS_NAME,
             branding=deepcopy(DEFAULT_BRANDING),
             logo_url=DEFAULT_LOGO_URL,
             policy=deepcopy(DEFAULT_POLICY),
@@ -164,8 +303,12 @@ async def tenant_settings(db) -> TenantSettings:
         clinical_chart = {**DEFAULT_CLINICAL_CHART, **(row.clinical_chart or {})}
         stored_ranges = (row.clinical_chart or {}).get("dentition_age_ranges") or {}
         clinical_chart["dentition_age_ranges"] = {
-            "primary_max_years": stored_ranges.get("primary_max_years") if stored_ranges.get("primary_max_years") is not None else 11,
-            "mixed_max_years": stored_ranges.get("mixed_max_years") if stored_ranges.get("mixed_max_years") is not None else 21,
+            "primary_max_years": stored_ranges.get("primary_max_years")
+            if stored_ranges.get("primary_max_years") is not None
+            else 11,
+            "mixed_max_years": stored_ranges.get("mixed_max_years")
+            if stored_ranges.get("mixed_max_years") is not None
+            else 21,
         }
         if clinical_chart != (row.clinical_chart or {}):
             row.clinical_chart = clinical_chart
@@ -180,13 +323,15 @@ async def tenant_settings(db) -> TenantSettings:
         if not row.logo_url:
             row.logo_url = DEFAULT_LOGO_URL
             changed = True
-        templates = deepcopy(row.communication_templates)
+        templates = normalize_communication_templates(row.communication_templates)
         for key, value in DEFAULT_COMMUNICATION_TEMPLATES.items():
             if key not in templates or (
                 key == "staff-invitation" and templates[key].get("body") == LEGACY_STAFF_INVITATION_BODY
             ):
                 templates[key] = deepcopy(value)
                 changed = True
+        if templates != (row.communication_templates or {}):
+            changed = True
         if branding != (row.branding or {}):
             row.branding = branding
         if changed:
@@ -244,7 +389,11 @@ async def configure_tenant(
     values = {
         "visibility": visibility,
         "branding": {**DEFAULT_BRANDING, **deepcopy(branding)} if branding is not None else None,
-        "logo_url": logo_url.strip() if isinstance(logo_url, str) and logo_url.strip() else DEFAULT_LOGO_URL if logo_url is not None else None,
+        "logo_url": logo_url.strip()
+        if isinstance(logo_url, str) and logo_url.strip()
+        else DEFAULT_LOGO_URL
+        if logo_url is not None
+        else None,
         "policy": (
             {
                 **DEFAULT_POLICY,

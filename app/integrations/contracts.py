@@ -31,7 +31,10 @@ class PlatformPaymentRequest(BaseModel):
 # Defines the message request model, contract, or value object.
 class MessageRequest(BaseModel):
     idempotency_key: str
-    channel: Literal["email", "sms"]
+    # Providers may add channels (for example WhatsApp) without requiring a
+    # contract release. The delivery layer resolves ``<channel>_provider``
+    # first and otherwise falls back to the configured messaging provider.
+    channel: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,39}$")
     destination: str
     subject: str
     body: str
@@ -145,6 +148,22 @@ class MapProvider(Protocol):
         longitude: float,
         address: str = "",
     ) -> dict[str, str]: ...
+
+
+# Defines the customer-domain DNS automation contract. Implementations are
+# installed integrations: the platform never receives or guesses a customer's
+# DNS credentials through an onboarding form.
+@runtime_checkable
+class DomainDnsProvider(Protocol):
+    async def can_manage_zone(self, hostname: str) -> bool: ...
+
+    async def upsert_txt_record(
+        self,
+        *,
+        hostname: str,
+        value: str,
+        idempotency_key: str,
+    ) -> dict: ...
 
 
 # Defines the accounting exporter model, contract, or value object.

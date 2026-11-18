@@ -10,7 +10,9 @@ from app.identity.models import StaffUser
 from app.identity.service import user_has_module
 from app.notifications.models import OutboxMessage
 from app.operations.service import require_current_credentials
+from app.organizations.configuration import communication_template_deliveries, render_communication_template
 from app.organizations.models import Location
+from app.organizations.recipient_timezones import format_recipient_datetime
 from app.patients.models import Patient
 from app.scheduling.models import Appointment
 from app.scheduling.policy import apply_change_policy
@@ -121,14 +123,36 @@ async def book(db, actor, body, existing_id=None):
                 idempotency_key=f"appointment-assigned:{row.id}:{provider.id}:{row.updated_at.isoformat()}",
             )
         )
-    db.add(
-        OutboxMessage(
+    reminder_template = actor.settings.communication_templates.get("appointment-reminder", {})
+    reminder_timestamp = format_recipient_datetime(row.starts_at, location.timezone)
+    reminder_date, reminder_time = reminder_timestamp.rsplit(" at ", 1)
+    reminder_values = {
+        "clinic_name": actor.organization.name,
+        "clinic_phone": actor.settings.public_content.get("contact_phone", "the clinic"),
+        "patient_first_name": patient.first_name,
+        "provider_name": provider.name or provider.email,
+        "appointment_date": reminder_date,
+        "appointment_time": reminder_time,
+    }
+    for channel, channel_template in communication_template_deliveries(reminder_template):
+        destination = patient.email if channel == "email" else patient.phone
+        if not destination:
+            continue
+        subject, message_body = render_communication_template(channel_template, reminder_values)
+        db.add(OutboxMessage(
             kind="appointment.reminder",
-            payload={"appointment_id": row.id, "starts_at": row.starts_at.isoformat()},
+            payload={
+                "appointment_id": row.id,
+                "starts_at": row.starts_at.isoformat(),
+                "destination": destination,
+                "channel": channel,
+                "subject": subject or "Appointment reminder",
+                "body": message_body,
+                "patient_id": patient.id,
+            },
             due_at=row.starts_at - timedelta(hours=policy.get("reminder_hours", 24)),
-            idempotency_key=f"reminder:{row.id}:{row.starts_at.isoformat()}",
-        )
-    )
+            idempotency_key=f"reminder:{row.id}:{row.starts_at.isoformat()}:{channel}",
+        ))
     audit(
         db,
         actor.user_id,

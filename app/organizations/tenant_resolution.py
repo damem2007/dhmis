@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.core.database import control_session, organization_session
 from app.organizations.configuration import tenant_settings
 from app.organizations.jurisdiction import jurisdiction
-from app.organizations.models import Organization
+from app.organizations.models import Organization, OrganizationDomainHost, OrganizationDomainRequest
 
 RESERVED_SLUGS = {"admin", "api", "health", "portal", "public", "v1"}
 SURFACE_FEATURE = {
@@ -57,6 +57,7 @@ class TenantResolution:
     source: str
     surface: str | None = None
     domain: str | None = None
+    redirect_to: str | None = None
 
 
 # Validate or enforce ensure surface before the operation continues.
@@ -92,22 +93,63 @@ async def resolve_organization(
                 normalized_host = normalize_hostname(hostname or "")
             except ValueError:
                 raise HTTPException(404, "Clinic not found") from None
-            organizations = (
-                await db.scalars(select(Organization).where(Organization.status == "active"))
-            ).all()
             resolution = None
-            for candidate in organizations:
-                for binding in candidate.domains:
-                    if normalize_hostname(str(binding.get("hostname", ""))) == normalized_host:
-                        resolution = TenantResolution(
-                            candidate,
-                            "custom-domain",
-                            str(binding.get("surface") or "public"),
-                            normalized_host,
-                        )
+            # Domain hosts are the authoritative routing lifecycle.  A custom
+            # hostname is deliberately invisible until its request is active;
+            # this prevents a tenant-owned hostname from serving an app before
+            # ownership, DNS, routing and TLS checks have succeeded.
+            host_row = (
+                await db.execute(
+                    select(OrganizationDomainHost, OrganizationDomainRequest, Organization)
+                    .join(OrganizationDomainRequest, OrganizationDomainRequest.id == OrganizationDomainHost.request_id)
+                    .join(Organization, Organization.id == OrganizationDomainHost.organization_id)
+                    .where(
+                        OrganizationDomainHost.hostname == normalized_host,
+                        OrganizationDomainHost.routing_status == "active",
+                        OrganizationDomainHost.tls_status == "ready",
+                        OrganizationDomainRequest.status == "active",
+                        Organization.status == "active",
+                    )
+                )
+            ).one_or_none()
+            if host_row:
+                host, domain_request, candidate = host_row
+                if host.role == "managed_back_office":
+                    # A custom domain is authoritative once active. Keep the
+                    # managed administrative hostname as an explicit lifecycle
+                    # record so it redirects rather than resolving as public.
+                    resolution = TenantResolution(
+                        candidate,
+                        "managed-alias-redirect",
+                        "back-office",
+                        normalized_host,
+                        f"https://{domain_request.backoffice_hostname}",
+                    )
+                else:
+                    resolution = TenantResolution(
+                        candidate,
+                        "domain-lifecycle",
+                        "back-office" if host.role == "back_office" else "public",
+                        normalized_host,
+                    )
+            # Compatibility lookup for rows created before the lifecycle
+            # tables.  New custom-domain requests never use this path.
+            if resolution is None:
+                organizations = (
+                    await db.scalars(select(Organization).where(Organization.status == "active"))
+                ).all()
+                for candidate in organizations:
+                    for binding in candidate.domains:
+                        if normalize_hostname(str(binding.get("hostname", ""))) == normalized_host:
+                            resolution = TenantResolution(
+                                candidate,
+                                "legacy-custom-domain",
+                                str(binding.get("surface") or "public"),
+                                normalized_host,
+                            )
+                            break
+                    if resolution:
                         break
-                if resolution:
-                    break
             if resolution is None:
                 inferred = platform_hostname_slug(normalized_host)
                 if inferred:
@@ -116,6 +158,27 @@ async def resolve_organization(
                         select(Organization).where(Organization.slug == inferred_slug)
                     )
                     if organization:
+                        latest_request = await db.scalar(
+                            select(OrganizationDomainRequest)
+                            .where(OrganizationDomainRequest.organization_id == organization.id)
+                            .order_by(OrganizationDomainRequest.created_at.desc())
+                        )
+                        if latest_request is not None and latest_request.mode == "custom":
+                            if latest_request.status == "active":
+                                target = latest_request.backoffice_hostname if inferred_surface == "back-office" else latest_request.public_hostname
+                                if target:
+                                    resolution = TenantResolution(
+                                        organization,
+                                        "managed-alias-redirect",
+                                        inferred_surface,
+                                        normalized_host,
+                                        f"https://{target}",
+                                    )
+                            # While the customer-owned request remains pending,
+                            # only managed Back Office stays available.
+                            elif inferred_surface is None:
+                                organization = None
+                    if organization and resolution is None:
                         resolution = TenantResolution(
                             organization,
                             "platform-hostname",
@@ -126,7 +189,11 @@ async def resolve_organization(
         if resolution is not None:
             raise HTTPException(404, f"Clinic is not active ({resolution.organization.status})")
         raise HTTPException(404, "Clinic not found")
-    if surface and resolution.surface and surface != resolution.surface:
+    # Public tenant hostname is shared by Tenant Website and the /portal
+    # extension.  It is not a distinct DNS host for Patient Portal.
+    if surface and resolution.surface and surface != resolution.surface and not (
+        resolution.surface == "public" and surface in {"portal", "booking"}
+    ):
         raise HTTPException(404, "Clinic surface is not enabled on this domain")
     requested_surface = surface or resolution.surface
     ensure_surface(resolution.organization, requested_surface)
@@ -167,6 +234,7 @@ async def safe_metadata(resolution: TenantResolution):
         "source": resolution.source,
         "domain": resolution.domain,
         "surface": resolution.surface,
+        "redirect_to": resolution.redirect_to,
         "region": organization.region,
         "currency": jurisdiction(organization.region).currency,
         "features": {

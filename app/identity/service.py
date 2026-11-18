@@ -302,6 +302,43 @@ async def issue_token(db, user, organization, *, ttl_seconds: int | None = None)
     )
 
 
+async def renew_token(db, user, organization, session_id: str):
+    """Extend the current, already-authenticated staff session and issue its replacement JWT.
+
+    This deliberately renews only the session selected by ``current_actor``.  It
+    neither creates another session nor bypasses the normal idle, revocation,
+    MFA, or token-version checks performed before the route handler runs.
+    """
+
+    now = int(time.time())
+    session = await db.get(StaffSession, session_id)
+    if (
+        session is None
+        or session.user_id != user.id
+        or session.revoked
+        or session.expires <= now
+    ):
+        raise ValueError("Session is no longer available")
+    ttl_seconds = settings().staff_session_ttl_seconds
+    session.expires = now + ttl_seconds
+    session.last_active = now
+    return jwt.encode(
+        {
+            "sub": user.id,
+            "org": organization.id,
+            "sid": session.id,
+            "ver": user.token_version,
+            "amr": ["pwd", "otp"],
+            "aud": "dhmis-staff",
+            "iss": "dhmis",
+            "iat": now,
+            "exp": now + ttl_seconds,
+        },
+        settings().jwt_secret.get_secret_value(),
+        algorithm="HS256",
+    )
+
+
 # Handle current actor for this module.
 async def current_actor(
     request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer)

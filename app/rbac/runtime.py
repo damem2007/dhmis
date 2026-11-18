@@ -99,16 +99,10 @@ def conditions_from_record(values: dict[str, Any] | None) -> Conditions | None:
     if expires_at is not None and expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     return Conditions(
-        step_up_mfa_minutes=_condition_value(
-            values, "step_up_mfa_minutes", "stepUpMfaMinutes"
-        ),
-        requires_approval=_condition_value(
-            values, "requires_approval", "requiresApproval"
-        ),
+        step_up_mfa_minutes=_condition_value(values, "step_up_mfa_minutes", "stepUpMfaMinutes"),
+        requires_approval=_condition_value(values, "requires_approval", "requiresApproval"),
         expires_at=expires_at,
-        ip_allow_list=tuple(
-            _condition_value(values, "ip_allow_list", "ipAllowList") or ()
-        ),
+        ip_allow_list=tuple(_condition_value(values, "ip_allow_list", "ipAllowList") or ()),
     )
 
 
@@ -148,7 +142,7 @@ def _context(domain: Domain, role_rows, grant_rows, rule_rows=None, sod_rows=Non
         rules=(
             [
                 FourEyesRule(
-                    id=row.id,
+                    id=row.key,
                     name=row.name,
                     scope=FourEyesScope(row.scope),
                     priority=row.priority,
@@ -162,7 +156,7 @@ def _context(domain: Domain, role_rows, grant_rows, rule_rows=None, sod_rows=Non
         sod_rules=(
             [
                 SoDRule(
-                    id=row.id,
+                    id=row.key,
                     message=row.message,
                     side_a=tuple(row.side_a),
                     side_b=tuple(row.side_b),
@@ -259,11 +253,7 @@ async def tenant_assignments(
                     Assignment(
                         user_id=user_id,
                         role_id=role.id,
-                        level=(
-                            Scope.ORGANIZATION
-                            if scope == "organization"
-                            else Scope.LOCATION
-                        ),
+                        level=(Scope.ORGANIZATION if scope == "organization" else Scope.LOCATION),
                         location_id=legacy.location_id,
                     )
                 )
@@ -280,11 +270,7 @@ async def tenant_assignments(
 # Handle platform assignments for this module.
 async def platform_assignments(db, user_id: str) -> list[Assignment]:
     rows = (
-        await db.scalars(
-            select(PlatformRoleAssignment).where(
-                PlatformRoleAssignment.user_id == user_id
-            )
-        )
+        await db.scalars(select(PlatformRoleAssignment).where(PlatformRoleAssignment.user_id == user_id))
     ).all()
     return [_assignment(row) for row in rows]
 
@@ -311,9 +297,7 @@ async def decide_tenant(
     # Tenant Super Admin is the tenant's policy owner. Their approved grants
     # still control whether an action is allowed, but four-eyes maker-checker
     # does not create a second approval loop for that role.
-    if decision.allowed and any(
-        assignment.role_id == "tenant-super-admin" for assignment in assignments
-    ):
+    if decision.allowed and any(assignment.role_id == "tenant-super-admin" for assignment in assignments):
         return replace(decision, needs_approval=False)
     return decision
 

@@ -4,7 +4,13 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.core.database import control_session
-from app.organizations.models import PlatformFeature, PlatformPlan, PlatformPlanFeature, PlatformSubscription
+from app.organizations.models import (
+    PlatformFeature,
+    PlatformPlan,
+    PlatformPlanFeature,
+    PlatformSubscription,
+    PlatformTenantAddon,
+)
 
 
 # Retrieve resolve entitlements for the current request or workflow.
@@ -24,7 +30,18 @@ async def resolve_entitlements(organization_id: str) -> dict[str, dict]:
                 )
             )
         ).all()
-    return {
+        addon_rows = (
+            await db.execute(
+                select(PlatformFeature, PlatformTenantAddon)
+                .join(PlatformTenantAddon, PlatformTenantAddon.feature_id == PlatformFeature.id)
+                .where(
+                    PlatformTenantAddon.organization_id == organization_id,
+                    PlatformTenantAddon.status == "active",
+                    PlatformFeature.active,
+                )
+            )
+        ).all()
+    entitlements = {
         feature.key: {
             "key": feature.key,
             "name": feature.name,
@@ -40,6 +57,42 @@ async def resolve_entitlements(organization_id: str) -> dict[str, dict]:
         }
         for feature, assignment in rows
     }
+    for feature, addon in addon_rows:
+        entitlements[feature.key] = {
+            "key": feature.key,
+            "name": feature.name,
+            "description": feature.description,
+            "category": feature.category,
+            "feature_type": feature.feature_type,
+            "unit": feature.unit,
+            "enabled": True,
+            "value": addon.quantity if feature.feature_type == "limit" else None,
+            "unlimited": False,
+            "included_quantity": addon.quantity if feature.feature_type == "metered" else None,
+            "public_label": feature.name,
+            "source": "tenant_addon",
+        }
+        if feature.key == "module.appointment_widget":
+            current_limit = entitlements.get("limit.appointment_widget_origins")
+            plan_quantity = int(current_limit.get("value") or 0) if current_limit and current_limit.get("enabled") else 0
+            entitlements["limit.appointment_widget_origins"] = {
+                "key": "limit.appointment_widget_origins",
+                "name": "Appointment widget origins",
+                "description": "Maximum approved website origins for the Appointment Widget.",
+                "category": "limits",
+                "feature_type": "limit",
+                "unit": "origins",
+                "enabled": True,
+                # A Widget product buys *additional* approved external origins.
+                # The tenant's portal/public hostname is an application route,
+                # not a Widget origin, and is therefore absent from this count.
+                "value": plan_quantity + addon.quantity,
+                "unlimited": False,
+                "included_quantity": None,
+                "public_label": f"{plan_quantity + addon.quantity} widget origin(s)",
+                "source": "tenant_addon",
+            }
+    return entitlements
 
 
 # Validate or enforce require location capacity before the operation continues.

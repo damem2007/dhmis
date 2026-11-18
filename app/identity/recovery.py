@@ -8,7 +8,11 @@ from app.core.config import settings
 from app.identity.models import PasswordResetChallenge, StaffSession
 from app.identity.security import digest
 from app.notifications.models import OutboxMessage
-from app.organizations.configuration import render_communication_template, tenant_settings
+from app.organizations.configuration import (
+    communication_template_deliveries,
+    render_communication_template,
+    tenant_settings,
+)
 
 
 def staff_password_reset_url(raw_token: str, tenant_slug: str) -> str:
@@ -50,8 +54,16 @@ async def issue_password_reset(
     db.add(reset)
     await db.flush()
     template = (await tenant_settings(db)).communication_templates["password-reset"]
+    email_template = next(
+        (content for channel, content in communication_template_deliveries(template) if channel == "email"),
+        None,
+    )
+    if email_template is None:
+        # Staff accounts currently have an email identity and no verified
+        # mobile channel. Do not issue an unusable reset challenge.
+        raise ValueError("Password reset requires an active email template")
     subject, body = render_communication_template(
-        template,
+        email_template,
         {
             "recipient_name": user.name,
             "clinic_name": clinic_name,
@@ -64,7 +76,7 @@ async def issue_password_reset(
             "destination": user.email,
             "subject": subject,
             "body": body,
-            "channel": template.get("channel", "email"),
+            "channel": "email",
             "user_id": user.id,
         },
         idempotency_key=f"staff-password-reset:{reset.id}",

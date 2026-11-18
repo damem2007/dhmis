@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import traceback
 
 from app.core.config import settings
 from app.core.database import control_session, dispose_engines
@@ -128,7 +129,7 @@ async def main():
             )
     except Exception as error:
         # Operational output must never leak credentials or patient data.
-        print(json.dumps({"success": False, "error_type": type(error).__name__, "verbose-error": type(error)}))
+        print(json.dumps({"success": False, "error_type": type(error).__name__, "verbose-error": str(error), "trackback": traceback.format_exc()}))
         # print(json.dumps({"success": False, "error_type": type(error).__name__}))
         raise SystemExit(1) from None
     finally:
